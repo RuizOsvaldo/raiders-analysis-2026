@@ -55,7 +55,7 @@ raiders-analysis-2026/
 
 ## Current status
 
-In development. Archetype phase complete. Scoring and UI pending.
+In development. Scoring engine complete. UI pending.
 
 ## Notes on data sources
 
@@ -85,3 +85,28 @@ team pressure rate allowed) rather than individual snap-by-snap grades. The
 individual OL data exists in paid services like PFF but is not available
 free. This is a known v1 limitation; OL grades will be noisier than skill
 position grades.
+
+## Scoring methodology
+
+Each current Raiders player is scored against the Kubiak position archetype
+for their position group. Performance features (for veterans) and combine
+measurables (for rookies) are standardized against the spread of values
+within Kubiak's reference player set, then a Euclidean distance to the
+archetype is converted to a 0-100 grade.
+
+Rookies are scored on combine measurables only. Sophomores are scored on a
+blend of combine measurables and their rookie-season performance, with the
+blend weighted by how much they played as a rookie. Veterans are scored on
+performance only.
+
+A confidence band accompanies each grade, widening when features are missing
+or when the reference set has few players at that position. The overall
+offensive grade is a weighted average across position groups (QB 30%, OL 25%,
+WR 15%, RB 20%, TE 10%); these weights reflect general analytical consensus
+on offensive importance in a wide-zone play-action system and are a designed
+choice rather than a learned one. The 20% RB weight absorbs both rushing
+contribution and pass-protection contribution, since individual pass-pro
+grades are not available in free data.
+
+Roughly 9% of pass and run plays from the reference seasons did not match
+against FTN charting data and were excluded from the scheme profile.
