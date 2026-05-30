@@ -723,33 +723,53 @@ def _compute_grade(player_vec: pd.Series, archetype_vec: pd.Series, scaler: Stan
     return grade, contributions, features_used, features_missing
 
 
-def score_player(gsis_id: str) -> dict:
-    """Score a Raiders player against the Kubiak archetype for their position group.
+def score_player(gsis_id: str, position_group: str | None = None) -> dict:
+    """Score any player against the Kubiak archetype for their position group.
+
+    If position_group is None, it is looked up from the player's most recent
+    roster row (any team, any season). Does NOT require the player to be on
+    the 2026 Raiders roster.
 
     Returns a dict with grade, confidence_interval, feature_contributions,
     features_used, and features_missing.
     """
     con = duckdb.connect(DB_PATH)
-    player_row = con.execute("""
-        SELECT player_name, pfr_id, position, depth_chart_position
-        FROM rosters
-        WHERE player_id = ? AND team = 'LV' AND season = 2026
-        LIMIT 1
-    """, [gsis_id]).fetchone()
 
-    if player_row is None:
-        con.close()
-        raise RuntimeError(f"Player {gsis_id} not found in 2026 LV Raiders roster")
-
-    player_name, pfr_id_from_roster, position, _ = player_row
+    if position_group is None:
+        player_row = con.execute("""
+            SELECT player_name, pfr_id, position
+            FROM rosters
+            WHERE player_id = ?
+            ORDER BY season DESC, week DESC NULLS LAST
+            LIMIT 1
+        """, [gsis_id]).fetchone()
+        if player_row is None:
+            con.close()
+            raise RuntimeError(f"Player {gsis_id} not found in rosters table")
+        player_name, _, position = player_row
+        position_group = POSITION_GROUP_MAP.get(position)
+        if position_group is None:
+            con.close()
+            raise RuntimeError(f"Player {gsis_id} ({player_name}) position '{position}' not in POSITION_GROUP_MAP")
+    else:
+        player_row = con.execute("""
+            SELECT player_name, pfr_id
+            FROM rosters
+            WHERE player_id = ?
+            ORDER BY season DESC, week DESC NULLS LAST
+            LIMIT 1
+        """, [gsis_id]).fetchone()
+        if player_row is None:
+            con.close()
+            raise RuntimeError(f"Player {gsis_id} not found in rosters table")
+        player_name, _ = player_row
 
     # Resolve pfr_id (rosters may have NULL for OL)
     pfr_id = _resolve_pfr_id(gsis_id, player_name, con)
     con.close()
 
-    position_group = POSITION_GROUP_MAP.get(position)
-    if position_group is None:
-        raise RuntimeError(f"Player {gsis_id} ({player_name}) position '{position}' not in POSITION_GROUP_MAP")
+    if position_group not in POSITION_FEATURES:
+        raise RuntimeError(f"Player {gsis_id} ({player_name}) position_group '{position_group}' not in POSITION_FEATURES")
 
     experience = classify_player(pfr_id)
     weights = WEIGHTING_RULES[experience]
@@ -826,6 +846,31 @@ def score_player(gsis_id: str) -> dict:
     }
 
 
+def score_raiders_player(gsis_id: str) -> dict:
+    """Score a player who must be on the 2026 LV Raiders roster.
+
+    Looks up the player in rosters where season=2026 and team='LV', extracts
+    their position group from that row, then delegates to score_player.
+    Raises if the player is not found on the 2026 roster.
+    """
+    con = duckdb.connect(DB_PATH)
+    row = con.execute("""
+        SELECT position FROM rosters
+        WHERE player_id = ? AND team = 'LV' AND season = 2026
+        LIMIT 1
+    """, [gsis_id]).fetchone()
+    con.close()
+
+    if row is None:
+        raise RuntimeError(f"Player {gsis_id} not found in 2026 LV Raiders roster")
+
+    position_group = POSITION_GROUP_MAP.get(row[0])
+    if position_group is None:
+        raise RuntimeError(f"Player {gsis_id} position '{row[0]}' not in POSITION_GROUP_MAP")
+
+    return score_player(gsis_id, position_group)
+
+
 # ---------------------------------------------------------------------------
 # Phase C: Position-group and overall grades
 # ---------------------------------------------------------------------------
@@ -841,7 +886,7 @@ def score_position_group(group: str, players_df: pd.DataFrame) -> dict:
     scored = []
     for _, row in players_df.iterrows():
         try:
-            result = score_player(row["player_id"])
+            result = score_raiders_player(row["player_id"])
             result["depth_order"] = row.get("depth_order", 99)
             scored.append(result)
         except RuntimeError as exc:
