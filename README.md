@@ -55,7 +55,7 @@ raiders-analysis-2026/
 
 ## Current status
 
-In development. Scoring engine complete. UI pending.
+In development. Physical Fit model complete. UI pending.
 
 ## Notes on data sources
 
@@ -88,7 +88,38 @@ position grades.
 
 ## Scoring methodology
 
-Each current Raiders player is scored against the Kubiak position archetype
+Physical Fit (primary grade)
+
+Each player is scored on physical and athletic traits against the snap-weighted
+mean of Kubiak's reference roster. Features per position are drawn from NFL
+Combine measurables (forty, shuttle, cone, vertical, broad jump) and roster
+data (height, weight). Feature lists vary by position to match the coverage
+actually available in free data: skill positions drop shuttle and cone where
+combine attendance was thin, tight ends drop forty for the same reason, and
+offensive line keeps all features given their relatively complete records.
+
+The physical grade isolates traits from performance and system experience.
+A player with a high physical grade has the measurables that fit Kubiak's
+scheme, regardless of what offense they've previously run. This answers the
+project's core question: do the Raiders have the right players for this
+offense?
+
+Statistical Similarity (secondary grade)
+
+The performance-based grade is preserved as secondary context. It measures
+how a player's recent statistical profile compares to Kubiak's reference
+players' profiles. Low scores often reflect that a player hasn't run a
+compatible offense yet, not that they're a poor player. The grade is useful
+for identifying players who have already demonstrated Kubiak-system
+production, but it should not be used in isolation.
+
+Combine coverage limitation: roughly 24% of reference players have no combine
+record at all (largely undrafted free agents who skipped the combine). These
+players contribute only height and weight to the physical archetype.
+Coverage is weakest for offensive linemen, where shuttle and three-cone data
+is incomplete.
+
+Each current Raiders player is also scored against the Kubiak position archetype
 for their position group. Performance features (for veterans) and combine
 measurables (for rookies) are standardized against the spread of values
 within Kubiak's reference player set, then a Euclidean distance to the

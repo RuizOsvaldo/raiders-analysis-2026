@@ -25,6 +25,26 @@ REG_SEASON_MAX_WEEK = 18
 # OL positions as labeled in snap_counts
 OL_POSITIONS = ("C", "G", "T")
 
+# Physical Fit feature lists per position, tuned to actual combine coverage.
+# Features dropped where coverage is below ~50% for the reference set.
+PHYSICAL_FEATURES = {
+    # cone removed from QB: Derek Carr has no cone record, leaving only 2/3 complete rows
+    "QB": ["ht", "wt", "forty", "shuttle", "vertical", "broad_jump"],
+    "RB": ["ht", "wt", "forty", "vertical", "broad_jump"],
+    "WR": ["ht", "wt", "forty", "vertical", "broad_jump"],
+    "TE": ["ht", "wt", "vertical", "broad_jump"],
+    "OL": ["ht", "wt", "forty", "shuttle", "cone", "vertical", "broad_jump"],
+}
+
+# Map roster/snap_counts position labels to position groups
+PHYSICAL_POSITION_MAP = {
+    "QB": "QB",
+    "RB": "RB", "FB": "RB",
+    "WR": "WR",
+    "TE": "TE",
+    "T": "OL", "G": "OL", "C": "OL", "OT": "OL", "OG": "OL", "OL": "OL",
+}
+
 
 def get_reference_players() -> pd.DataFrame:
     """Return players who met the snap floor on the reference Kubiak teams.
@@ -607,16 +627,91 @@ def build_position_archetypes() -> pd.DataFrame:
     return df.reset_index()
 
 
+def build_physical_archetypes() -> pd.DataFrame:
+    """Build physical-fit archetypes per position group from combine + roster data.
+
+    Returns one row per position group with the snap-weighted mean of each
+    physical feature, computed across the reference player set.
+
+    Coverage notes:
+    - OL players have NULL gsis_id in rosters; ht/wt are fetched via player
+      name matching. Combine data joins directly via pfr_player_id.
+    - Players without combine records contribute only ht/wt from rosters.
+    - Players with partial combines contribute to the features they have;
+      the weighted mean is computed per-feature independently.
+    """
+    ref_players = get_reference_players()
+    if ref_players.empty:
+        raise RuntimeError("No reference players found. Run get_reference_players first.")
+
+    con = duckdb.connect(DB_PATH)
+    rows = []
+
+    for group, features in PHYSICAL_FEATURES.items():
+        positions_in_group = [p for p, g in PHYSICAL_POSITION_MAP.items() if g == group]
+        members = ref_players[ref_players["position"].isin(positions_in_group)].copy()
+
+        if members.empty:
+            raise RuntimeError(f"No reference players found for group {group}")
+
+        # Pull physical data for all members in one query.
+        # ht/wt: from rosters via gsis_id (non-OL) or player name (OL).
+        # combine metrics: directly via pfr_player_id (= player_id in reference_players).
+        con.register("members_df", members[["player_id", "gsis_id", "player"]])
+        physical = con.execute("""
+            SELECT
+                m.player_id,
+                AVG(r.height) AS ht,
+                AVG(r.weight) AS wt,
+                MAX(c.forty)      AS forty,
+                MAX(c.shuttle)    AS shuttle,
+                MAX(c.cone)       AS cone,
+                MAX(c.vertical)   AS vertical,
+                MAX(c.broad_jump) AS broad_jump
+            FROM members_df m
+            LEFT JOIN rosters r ON (
+                (m.gsis_id IS NOT NULL AND r.player_id = m.gsis_id)
+                OR
+                (m.gsis_id IS NULL AND r.player_name = m.player)
+            )
+            LEFT JOIN combine c ON c.pfr_id = m.player_id
+            GROUP BY m.player_id
+        """).fetchdf()
+
+        if physical.empty:
+            raise RuntimeError(f"No physical data found for {group} reference players")
+
+        merged = members.merge(physical, on="player_id", how="inner")
+        merged["agg_weight"] = merged["total_offensive_snaps"] * merged["weight"]
+
+        row = {"position_group": group}
+        for feat in features:
+            valid = merged[merged[feat].notna()]
+            if valid.empty:
+                raise RuntimeError(
+                    f"No {group} reference players have feature '{feat}'. "
+                    f"Remove it from PHYSICAL_FEATURES or investigate coverage."
+                )
+            row[feat] = (valid[feat] * valid["agg_weight"]).sum() / valid["agg_weight"].sum()
+            row[f"{feat}_n"] = int(len(valid))
+        rows.append(row)
+
+    con.close()
+    return pd.DataFrame(rows)
+
+
 def write_archetypes() -> None:
     """Run all archetype builds and persist to DuckDB."""
     scheme = build_scheme_profile()
     archetypes = build_position_archetypes()
+    physical = build_physical_archetypes()
     ref_players = get_reference_players()
 
     con = duckdb.connect(DB_PATH)
     for table, df in [
         ("kubiak_scheme_profile", scheme),
         ("kubiak_position_archetypes", archetypes),
+        ("kubiak_physical_archetypes", physical),
         ("kubiak_reference_players", ref_players),
     ]:
         con.execute(f"DROP TABLE IF EXISTS {table}")

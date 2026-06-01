@@ -10,6 +10,11 @@ from sklearn.preprocessing import StandardScaler
 
 DB_PATH = "data/raw/nfl.duckdb"
 
+try:
+    from archetype import PHYSICAL_FEATURES, PHYSICAL_POSITION_MAP
+except ImportError:
+    from src.archetype import PHYSICAL_FEATURES, PHYSICAL_POSITION_MAP
+
 # Years of NFL experience determine combine vs performance weighting
 # (years counted as completed seasons before 2026)
 WEIGHTING_RULES = {
@@ -964,12 +969,283 @@ def score_offense() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Physical Fit model
+# ---------------------------------------------------------------------------
+
+def get_physical_features(player_id: str, position_group: str,
+                           pfr_id: str | None = None,
+                           player_name: str = "") -> pd.Series:
+    """Return a player's physical features in PHYSICAL_FEATURES[group] order.
+
+    ht/wt from rosters (most recent rows, averaged). Combine measurables from
+    combine table joined via rosters.pfr_id, with a fallback to snap_counts
+    name lookup for OL players whose rosters.pfr_id is NULL.
+    An explicit pfr_id parameter is tried last if both roster joins fail.
+    """
+    features = PHYSICAL_FEATURES[position_group]
+    con = duckdb.connect(DB_PATH)
+
+    row = con.execute("""
+        SELECT
+            (SELECT AVG(height) FROM rosters WHERE player_id = ?) AS ht,
+            (SELECT AVG(weight) FROM rosters WHERE player_id = ?) AS wt,
+            MAX(c.forty)      AS forty,
+            MAX(c.shuttle)    AS shuttle,
+            MAX(c.cone)       AS cone,
+            MAX(c.vertical)   AS vertical,
+            MAX(c.broad_jump) AS broad_jump
+        FROM (SELECT ? AS pid) p
+        LEFT JOIN rosters r ON r.player_id = p.pid
+        LEFT JOIN combine c ON c.pfr_id = COALESCE(
+            r.pfr_id,
+            (SELECT pfr_player_id FROM snap_counts WHERE player = r.player_name LIMIT 1),
+            ?
+        )
+    """, [player_id, player_id, player_id, pfr_id]).fetchone()
+    con.close()
+
+    if row is None or all(v is None for v in row):
+        raise RuntimeError(
+            f"Player {player_id} ({player_name}) has no physical data in rosters or combine"
+        )
+
+    _all = {"ht": row[0], "wt": row[1], "forty": row[2], "shuttle": row[3],
+            "cone": row[4], "vertical": row[5], "broad_jump": row[6]}
+    return pd.Series({f: float(_all[f]) if _all[f] is not None else float("nan")
+                      for f in features})
+
+
+def build_physical_scaler(position_group: str) -> tuple[pd.Series, StandardScaler]:
+    """Return the physical archetype mean vector and a fitted StandardScaler.
+
+    Scaler is fit on reference players' physical features for the group.
+    Only players with complete records for all group features are used.
+    """
+    con = duckdb.connect(DB_PATH)
+
+    arch_row = con.execute(
+        "SELECT * FROM kubiak_physical_archetypes WHERE position_group = ?",
+        [position_group],
+    ).fetchdf()
+    if arch_row.empty:
+        con.close()
+        raise RuntimeError(f"No physical archetype found for position_group={position_group}")
+    arch_row = arch_row.iloc[0]
+
+    positions_in_group = [p for p, g in PHYSICAL_POSITION_MAP.items() if g == position_group]
+    ref_players = con.execute(
+        "SELECT player_id, gsis_id, player FROM kubiak_reference_players WHERE position IN (SELECT UNNEST(?))",
+        [positions_in_group],
+    ).fetchdf()
+
+    con.register("ref_df", ref_players)
+    physical = con.execute("""
+        SELECT
+            m.player_id,
+            AVG(r.height)     AS ht,
+            AVG(r.weight)     AS wt,
+            MAX(c.forty)      AS forty,
+            MAX(c.shuttle)    AS shuttle,
+            MAX(c.cone)       AS cone,
+            MAX(c.vertical)   AS vertical,
+            MAX(c.broad_jump) AS broad_jump
+        FROM ref_df m
+        LEFT JOIN rosters r ON (
+            (m.gsis_id IS NOT NULL AND r.player_id = m.gsis_id)
+            OR (m.gsis_id IS NULL AND r.player_name = m.player)
+        )
+        LEFT JOIN combine c ON c.pfr_id = m.player_id
+        GROUP BY m.player_id
+    """).fetchdf()
+    con.close()
+
+    features = PHYSICAL_FEATURES[position_group]
+    feature_matrix = []
+    for _, row in physical.iterrows():
+        vals = [row.get(f) for f in features]
+        if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in vals):
+            continue
+        feature_matrix.append([float(v) for v in vals])
+
+    if len(feature_matrix) < 3:
+        raise RuntimeError(
+            f"Only {len(feature_matrix)} complete physical records for {position_group}. "
+            f"Need at least 3 to fit a scaler."
+        )
+
+    scaler = StandardScaler()
+    scaler.fit(feature_matrix)
+
+    archetype_vec = pd.Series({f: arch_row[f] for f in features})
+    return archetype_vec, scaler
+
+
+def score_player_physical(player_id: str, position_group: str | None = None) -> dict:
+    """Score any player's physical fit against the Kubiak physical archetype.
+
+    Mirrors score_player() in shape and return structure. Does NOT require the
+    player to be on the 2026 Raiders roster.
+    """
+    con = duckdb.connect(DB_PATH)
+    if position_group is None:
+        row = con.execute("""
+            SELECT player_name, position FROM rosters
+            WHERE player_id = ?
+            ORDER BY season DESC, week DESC NULLS LAST LIMIT 1
+        """, [player_id]).fetchone()
+        if row is None:
+            con.close()
+            raise RuntimeError(f"Player {player_id} not found in rosters")
+        player_name, position = row
+        position_group = PHYSICAL_POSITION_MAP.get(position)
+        if position_group is None:
+            con.close()
+            raise RuntimeError(
+                f"Player {player_id} ({player_name}) position '{position}' not in PHYSICAL_POSITION_MAP"
+            )
+    else:
+        row = con.execute("""
+            SELECT player_name FROM rosters
+            WHERE player_id = ?
+            ORDER BY season DESC, week DESC NULLS LAST LIMIT 1
+        """, [player_id]).fetchone()
+        if row is None:
+            con.close()
+            raise RuntimeError(f"Player {player_id} not found in rosters")
+        player_name = row[0]
+
+    pfr_id = _resolve_pfr_id(player_id, player_name, con)
+    con.close()
+
+    pf = get_physical_features(player_id, position_group, pfr_id, player_name)
+    archetype_vec, scaler = build_physical_scaler(position_group)
+
+    with duckdb.connect(DB_PATH) as con2:
+        n_ref = con2.execute(
+            "SELECT COUNT(*) FROM kubiak_reference_players WHERE position IN (SELECT UNNEST(?))",
+            [[p for p, g in PHYSICAL_POSITION_MAP.items() if g == position_group]],
+        ).fetchone()[0]
+
+    features = PHYSICAL_FEATURES[position_group]
+    grade, contributions, features_used, features_missing = _compute_grade(
+        pf, archetype_vec, scaler, features
+    )
+
+    total_features = len(features)
+    n_missing = len(features_missing)
+    ci_width = BASE_UNCERTAINTY * math.sqrt(
+        n_missing / max(total_features, 1) + 1 / max(n_ref, 1)
+    )
+    ci = (max(0.0, grade - 100 * ci_width), min(100.0, grade + 100 * ci_width))
+
+    return {
+        "player_id":             player_id,
+        "player_name":           player_name,
+        "position_group":        position_group,
+        "grade":                 round(grade, 2),
+        "confidence_interval":   (round(ci[0], 2), round(ci[1], 2)),
+        "feature_contributions": {k: round(v, 4) for k, v in contributions.items()},
+        "features_used":         features_used,
+        "features_missing":      features_missing,
+        "model":                 "physical",
+    }
+
+
+def score_raiders_player_physical(player_id: str) -> dict:
+    """Look up a player on the 2026 LV roster and score their physical fit."""
+    con = duckdb.connect(DB_PATH)
+    row = con.execute("""
+        SELECT position FROM rosters
+        WHERE player_id = ? AND team = 'LV' AND season = 2026
+        LIMIT 1
+    """, [player_id]).fetchone()
+    con.close()
+
+    if row is None:
+        raise RuntimeError(f"Player {player_id} not found in 2026 LV Raiders roster")
+
+    position_group = PHYSICAL_POSITION_MAP.get(row[0])
+    if position_group is None:
+        raise RuntimeError(f"Position '{row[0]}' not in PHYSICAL_POSITION_MAP")
+
+    return score_player_physical(player_id, position_group)
+
+
+def score_offense_physical() -> dict:
+    """Score the entire 2026 Raiders offense on physical fit.
+
+    Returns a structure parallel to score_offense() so the UI can render both.
+    """
+    con = duckdb.connect(DB_PATH)
+    roster = con.execute("""
+        SELECT player_id, player_name, position,
+               ROW_NUMBER() OVER (PARTITION BY position ORDER BY player_name) AS depth_order
+        FROM rosters
+        WHERE team = 'LV' AND season = 2026 AND status IN ('ACT', 'UFA')
+          AND position IN (SELECT UNNEST(?))
+        ORDER BY position, player_name
+    """, [list(PHYSICAL_POSITION_MAP.keys())]).fetchdf()
+    con.close()
+
+    roster["position_group"] = roster["position"].map(PHYSICAL_POSITION_MAP)
+
+    groups = {}
+    for group in OFFENSE_WEIGHTS:
+        group_players = roster[roster["position_group"] == group].copy()
+        if group_players.empty:
+            continue
+
+        scored = []
+        for _, row in group_players.iterrows():
+            try:
+                result = score_raiders_player_physical(row["player_id"])
+                result["depth_order"] = row.get("depth_order", 99)
+                scored.append(result)
+            except RuntimeError as exc:
+                print(f"  WARNING: could not score {row['player_name']} ({group}) physical: {exc}")
+
+        if not scored:
+            groups[group] = {
+                "position_group": group, "players": [],
+                "starter_grade": float("nan"), "unit_grade": float("nan"),
+            }
+            continue
+
+        scored.sort(key=lambda r: r.get("depth_order", 99))
+        groups[group] = {
+            "position_group": group,
+            "players":        scored,
+            "starter_grade":  round(scored[0]["grade"], 2),
+            "unit_grade":     round(sum(r["grade"] for r in scored) / len(scored), 2),
+        }
+
+    total_weight = 0.0
+    overall = 0.0
+    for group, result in groups.items():
+        ug = result.get("unit_grade", float("nan"))
+        if not math.isnan(ug):
+            w = OFFENSE_WEIGHTS.get(group, 0)
+            overall += ug * w
+            total_weight += w
+
+    if total_weight > 0:
+        overall = overall / total_weight
+
+    return {
+        "overall_grade": round(overall, 2),
+        "groups":        groups,
+        "computed_at":   datetime.utcnow().isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Phase D: Persist results
 # ---------------------------------------------------------------------------
 
 def write_grades() -> None:
-    """Compute the full Raiders offense grade and persist to DuckDB."""
+    """Compute both Statistical Similarity and Physical Fit grades, persist to DuckDB."""
     result = score_offense()
+    physical_result = score_offense_physical()
 
     player_rows = []
     for group, grp_result in result["groups"].items():
@@ -1005,11 +1281,37 @@ def write_grades() -> None:
     }])
     groups_df = pd.DataFrame(group_rows)
 
+    # Flatten physical grades
+    physical_player_rows = []
+    for group, grp_result in physical_result["groups"].items():
+        for p in grp_result.get("players", []):
+            physical_player_rows.append({
+                "player_id":             p["player_id"],
+                "player_name":           p["player_name"],
+                "position_group":        p["position_group"],
+                "grade":                 p["grade"],
+                "ci_low":                p["confidence_interval"][0],
+                "ci_high":               p["confidence_interval"][1],
+                "features_used":         len(p["features_used"]),
+                "features_missing":      len(p["features_missing"]),
+                "missing_feature_names": ", ".join(p["features_missing"]),
+            })
+
+    physical_players_df = pd.DataFrame(physical_player_rows)
+    physical_summary_df = pd.DataFrame([{
+        "overall_grade": physical_result["overall_grade"],
+        "computed_at":   physical_result["computed_at"],
+        **{f"grade_{g}": physical_result["groups"].get(g, {}).get("unit_grade", float("nan"))
+           for g in OFFENSE_WEIGHTS},
+    }])
+
     con = duckdb.connect(DB_PATH)
     for table, df in [
-        ("raiders_player_grades",    players_df),
-        ("raiders_offense_summary",  summary_df),
-        ("raiders_position_grades",  groups_df),
+        ("raiders_player_grades",           players_df),
+        ("raiders_offense_summary",         summary_df),
+        ("raiders_position_grades",         groups_df),
+        ("raiders_physical_player_grades",  physical_players_df),
+        ("raiders_physical_offense_summary", physical_summary_df),
     ]:
         con.execute(f"DROP TABLE IF EXISTS {table}")
         if not df.empty:
