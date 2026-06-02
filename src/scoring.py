@@ -931,7 +931,7 @@ def score_offense() -> dict:
         SELECT player_id, player_name, position, depth_chart_position,
                ROW_NUMBER() OVER (PARTITION BY position ORDER BY player_name) AS depth_order
         FROM rosters
-        WHERE team = 'LV' AND season = 2026 AND status IN ('ACT', 'UFA')
+        WHERE team = 'LV' AND season = 2026 AND status IN ('ACT', 'RES')
           AND position IN (SELECT UNNEST(?))
         ORDER BY position, player_name
     """, [list(POSITION_GROUP_MAP.keys())]).fetchdf()
@@ -1181,7 +1181,7 @@ def score_offense_physical() -> dict:
         SELECT player_id, player_name, position,
                ROW_NUMBER() OVER (PARTITION BY position ORDER BY player_name) AS depth_order
         FROM rosters
-        WHERE team = 'LV' AND season = 2026 AND status IN ('ACT', 'UFA')
+        WHERE team = 'LV' AND season = 2026 AND status IN ('ACT', 'RES')
           AND position IN (SELECT UNNEST(?))
         ORDER BY position, player_name
     """, [list(PHYSICAL_POSITION_MAP.keys())]).fetchdf()
