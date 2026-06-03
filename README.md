@@ -53,9 +53,29 @@ raiders-analysis-2026/
 └── README.md
 ```
 
-## Current status
+## Running the app
 
-In development. Physical Fit model complete. UI pending.
+After running the data ingestion and scoring pipelines:
+
+```
+uv run python3 src/data_ingestion.py
+uv run python3 src/archetype.py
+uv run python3 src/scoring.py
+uv run python3 src/roster.py
+```
+
+Launch the Streamlit app:
+
+```
+cd app
+uv run streamlit run streamlit_app.py
+```
+
+The app opens at http://localhost:8501 with four pages:
+- **Roster Overview** - filterable table of all 45 offensive players with both grades
+- **Player Detail** - per-player grade breakdown and archetype comparison
+- **Position Comparison** - scatter plot of physical vs statistical fit per position group
+- **Methodology** - grade computation explanation and Kubiak scheme profile data
 
 ## Notes on data sources
 

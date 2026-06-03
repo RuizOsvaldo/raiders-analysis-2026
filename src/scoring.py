@@ -832,6 +832,13 @@ def score_player(gsis_id: str, position_group: str | None = None) -> dict:
     else:
         grade, contributions, features_used, features_missing = comb_grade, comb_contrib, c_used, c_missing
 
+    # Coverage penalty: penalize grades computed on partial feature sets
+    _n_used = len(features_used)
+    _n_total = _n_used + len(features_missing)
+    coverage = _n_used / _n_total if _n_total > 0 else 0.0
+    raw_grade = grade
+    grade = raw_grade * coverage
+
     # Confidence interval
     total_features = len(perf_features) if weights["performance"] > 0 else len(comb_features)
     n_missing = len([f for f in features_missing if f in (perf_features if weights["performance"] > 0 else comb_features)])
@@ -844,6 +851,8 @@ def score_player(gsis_id: str, position_group: str | None = None) -> dict:
         "position_group":       position_group,
         "experience_bucket":    experience,
         "grade":                round(grade, 2),
+        "raw_grade":            round(raw_grade, 2),
+        "coverage":             round(coverage, 4),
         "confidence_interval":  (round(ci[0], 2), round(ci[1], 2)),
         "feature_contributions": {k: round(v, 4) for k, v in contributions.items()},
         "features_used":        features_used,
@@ -1131,6 +1140,13 @@ def score_player_physical(player_id: str, position_group: str | None = None) -> 
         pf, archetype_vec, scaler, features
     )
 
+    # Coverage penalty: penalize grades computed on partial feature sets
+    _n_used = len(features_used)
+    _n_total = _n_used + len(features_missing)
+    coverage = _n_used / _n_total if _n_total > 0 else 0.0
+    raw_grade = grade
+    grade = raw_grade * coverage
+
     total_features = len(features)
     n_missing = len(features_missing)
     ci_width = BASE_UNCERTAINTY * math.sqrt(
@@ -1143,6 +1159,8 @@ def score_player_physical(player_id: str, position_group: str | None = None) -> 
         "player_name":           player_name,
         "position_group":        position_group,
         "grade":                 round(grade, 2),
+        "raw_grade":             round(raw_grade, 2),
+        "coverage":              round(coverage, 4),
         "confidence_interval":   (round(ci[0], 2), round(ci[1], 2)),
         "feature_contributions": {k: round(v, 4) for k, v in contributions.items()},
         "features_used":         features_used,
@@ -1256,6 +1274,8 @@ def write_grades() -> None:
                 "position_group":      p["position_group"],
                 "experience_bucket":   p["experience_bucket"],
                 "grade":               p["grade"],
+                "raw_grade":           p["raw_grade"],
+                "coverage":            p["coverage"],
                 "ci_low":              p["confidence_interval"][0],
                 "ci_high":             p["confidence_interval"][1],
                 "features_used":       len(p["features_used"]),
@@ -1290,6 +1310,8 @@ def write_grades() -> None:
                 "player_name":           p["player_name"],
                 "position_group":        p["position_group"],
                 "grade":                 p["grade"],
+                "raw_grade":             p["raw_grade"],
+                "coverage":              p["coverage"],
                 "ci_low":                p["confidence_interval"][0],
                 "ci_high":               p["confidence_interval"][1],
                 "features_used":         len(p["features_used"]),
