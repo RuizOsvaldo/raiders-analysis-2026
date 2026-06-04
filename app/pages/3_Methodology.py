@@ -93,8 +93,29 @@ nfl_data_py and nflreadpy:
 """)
 
 scheme = load_scheme_profile()
-st.dataframe(scheme, use_container_width=True, hide_index=True)
+
+# Rename and reformat for readability
+display = scheme.copy()
+display["Context"]         = display["red_zone"].map({0: "Outside red zone", 1: "Red zone (inside 20)"})
+display["Total plays"]     = display["total_plays"]
+display["Avg EPA / play"]  = display["avg_epa"].round(3)
+display["Pass rate"]       = (display["pass_rate"] * 100).round(1).astype(str) + "%"
+display["Shotgun rate"]    = (display["shotgun_rate"] * 100).round(1).astype(str) + "%"
+display["No-huddle rate"]  = (display["no_huddle_rate"] * 100).round(1).astype(str) + "%"
+display["Play-action rate"] = (display["play_action_rate"] * 100).round(1).astype(str) + "%"
+display["Motion rate"]     = (display["motion_rate"] * 100).round(1).astype(str) + "%"
+display["Screen rate"]     = (display["screen_rate"] * 100).round(1).astype(str) + "%"
+display["RPO rate"]        = (display["rpo_rate"] * 100).round(1).astype(str) + "%"
+
+cols = ["Context", "Total plays", "Avg EPA / play", "Pass rate",
+        "Shotgun rate", "No-huddle rate", "Play-action rate",
+        "Motion rate", "Screen rate", "RPO rate"]
+st.dataframe(display[cols], use_container_width=True, hide_index=True)
 st.caption(
-    "Play-call rates from the weighted Saints 2024 / Seahawks 2025 reference set, "
-    "split between red zone (inside 20) and the rest of the field."
+    "All rates are as a percentage of total offensive plays (pass + run). "
+    "Play-action rate as a fraction of pass plays only is roughly pass-action / pass-rate "
+    "(e.g., 13% / 57% = ~23% of dropbacks outside the red zone). "
+    "Motion rate reflects FTN charting of any pre-snap motion; Shanahan-tree offenses "
+    "routinely exceed 50%. "
+    "Source: weighted Saints 2024 (40%) + Seahawks 2025 (60%), regular season only."
 )

@@ -18,6 +18,9 @@ data/processed/*
 *.duckdb
 *.duckdb.wal
 
+# Handoff documents (internal, not part of the public repo)
+CLAUDE_CLI_HANDOFF*.md
+
 # IDE
 .vscode/
 .idea/
