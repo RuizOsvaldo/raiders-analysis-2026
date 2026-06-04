@@ -1,0 +1,6 @@
+position_group,completion_pct,epa_per_dropback,sack_rate,time_to_throw,completed_air_yards,play_action_completion_pct,out_of_pocket_completion_pct,rz_completion_pct,rz_epa_per_dropback,rush_yards_over_expected,success_rate_outside_zone,shotgun_efficiency,rb_target_share,snap_share,rz_success_rate,rz_target_share,avg_separation,yac_over_expected,target_share,air_yards_share,motion_catch_rate,air_yards_per_target,rush_epa_guard,rush_epa_tackle,rush_epa_end,team_pressure_rate_allowed,avg_snap_share
+QB,0.6686116217728398,0.11300580868239142,0.05269135636284093,2.8299328013030607,6.326410175879396,0.6212624584717635,0.5422222222222245,0.5360501567398124,-0.06461239092564357,,,,,,,,,,,,,,,,,,
+RB,,,,,,,,,,0.1720784322304701,0.39388145315487794,0.3784946236559156,0.0990597543436393,0.5094253795418495,0.4491525423728816,0.055900005535332545,,,,,,,,,,,
+WR,,,,,,,,,,,,,,,,0.11581278559131433,2.96160830255677,0.606280424438876,0.21400578187499084,0.2787017908041254,0.6369359916054582,,,,,,
+TE,,,,,,,,,,,,,,0.6109978927784412,,0.12758612621949947,,0.5072629294140624,0.12339934929210364,,,6.421501706484642,,,,,
+OL,,,,,,,,,,,,,,,,,,,,,,,-0.01429059931880958,-0.045208998988701996,0.034464076007421005,0.2979256080114435,0.8925606459924781

@@ -1,0 +1,46 @@
+player_id,player_name,position,jersey_number,years_exp,college,headshot_url,position_group,physical_grade,physical_raw,physical_coverage,physical_features_used,physical_features_missing,physical_missing_names,statistical_grade,statistical_coverage,statistical_features_used,statistical_features_missing,experience_bucket,scheme_experience
+00-0037829,Spencer Burford,OL,70.0,4.0,Texas-San Antonio,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/rizdurffvnwd66ait3pt",OL,40.75,47.54,0.8571,6,1,cone,38.8,1.0,5,0,veteran,yes
+00-0034759,Kolton Miller,OL,74.0,8.0,UCLA,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/jaq8p0tiipizksjbt3aa",OL,31.24,31.24,1.0,7,0,,40.69,1.0,5,0,veteran,yes
+00-0039735,Jackson Powers-Johnson,OL,58.0,2.0,Oregon,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/o2lpxcphdigzwbjr12jh",OL,30.34,53.09,0.5714,4,3,"forty, shuttle, cone",36.47,1.0,5,0,veteran,yes
+JAT415291,Isaiah Jatta,OL,,,,,OL,24.87,87.05,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",0.0,0.0,0,5,rookie,partial
+00-0038923,Dalton Wagner,OL,78.0,3.0,Arkansas,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/po1l6ufoljeuaaodsbvz",OL,24.74,43.3,0.5714,4,3,"forty, shuttle, cone",24.81,0.8,8,2,sophomore_low_snap,yes
+MIS655235,Kamar Missouri,OL,,,,,OL,23.36,81.74,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",0.0,0.0,0,5,rookie,partial
+00-0039349,DJ Glaze,OL,71.0,2.0,Maryland,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/yj1mdamgenemfg28e4b9",OL,22.04,77.14,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",0.0,0.0,0,5,rookie,yes
+ZUH415291,Trey Zuhn III,OL,,,,,OL,21.55,75.42,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",0.0,0.0,0,5,rookie,partial
+PIC776223,Justin Pickett,OL,,,,,OL,21.5,75.25,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",0.0,0.0,0,5,rookie,partial
+00-0040150,Caleb Rogers,OL,76.0,1.0,Texas Tech,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/kb4qmwui2cqsllri7jyt",OL,21.4,74.89,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",2.94,0.5,5,5,sophomore_high_snap,yes
+00-0039544,Will Putnam,OL,67.0,2.0,Clemson,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/clwvsywtoyawl9dhn7gv",OL,20.21,70.72,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",3.55,0.5,5,5,sophomore_low_snap,yes
+00-0040151,Charles Grant,OL,60.0,1.0,William & Mary,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/dnnotmxgsahmqaesijf0",OL,18.56,64.95,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",47.21,0.7,7,3,sophomore_low_snap,yes
+00-0038586,Atonio Mafi,OL,56.0,3.0,UCLA,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/xdqzggyys7bapcjjajcl",OL,16.65,58.28,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",0.98,1.0,5,0,veteran,partial
+HEN583744,Niklas Henning,OL,,,,,OL,14.3,50.04,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",0.0,0.0,0,5,rookie,partial
+00-0037825,Tyler Linderbaum,OL,65.0,4.0,Iowa,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/ojvsyozouivghvkbw5qk",OL,14.12,49.41,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",37.7,1.0,5,0,veteran,no
+00-0036604,Jordan Meredith,OL,61.0,4.0,Western Kentucky,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/mcahbqsrb49owl6ipc2y",OL,14.12,49.41,0.2857,2,5,"forty, shuttle, cone, vertical, broad_jump",40.18,1.0,5,0,veteran,yes
+00-0029604,Kirk Cousins,QB,8.0,14.0,Michigan State,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/hmdqr7gju0dciapvdjcv",QB,51.19,51.19,1.0,6,0,,42.9,1.0,9,0,veteran,yes
+CLA362740,Jacob Clark,QB,,,,,QB,23.66,70.98,0.3333,2,4,"forty, shuttle, vertical, broad_jump",0.0,0.0,0,5,rookie,partial
+MEN516487,Fernando Mendoza,QB,,,,,QB,22.97,68.91,0.3333,2,4,"forty, shuttle, vertical, broad_jump",13.03,0.4,2,3,rookie,partial
+00-0038579,Aidan O'Connell,QB,12.0,3.0,Purdue,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/bcejxo7ofgk5pszhup12",QB,22.65,67.95,0.3333,2,4,"forty, shuttle, vertical, broad_jump",50.17,1.0,9,0,veteran,yes
+WAS797326,Mike Washington Jr.,RB,,,,,RB,63.44,63.44,1.0,5,0,,42.19,0.7143,5,2,rookie,partial
+00-0037304,Connor Heyward,RB,34.0,4.0,Michigan State,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/b9bnasge2v2dtctdtqnf",RB,58.64,73.3,0.8,4,1,broad_jump,11.58,0.7143,5,2,veteran,no
+HEM079286,Roman Hemby,RB,,,,,RB,35.02,87.56,0.4,2,3,"forty, vertical, broad_jump",24.51,0.2857,2,5,rookie,partial
+00-0039407,Dylan Laube,RB,23.0,2.0,New Hampshire,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/lpizdza73bgksstymv5t",RB,31.8,79.5,0.4,2,3,"forty, vertical, broad_jump",2.18,0.7143,5,2,veteran,yes
+00-0039244,Chris Collier,RB,33.0,2.0,University of Lock Haven,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/oduxbaidoa1x5mzhhiz0",RB,31.59,78.97,0.4,2,3,"forty, vertical, broad_jump",3.24,0.2143,3,11,sophomore_low_snap,yes
+00-0040122,Ashton Jeanty,RB,2.0,1.0,Boise State,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/syspis1mntov9kgspb7r",RB,29.01,72.53,0.4,2,3,"forty, vertical, broad_jump",32.45,0.6429,9,5,sophomore_high_snap,yes
+00-0034365,Ian Thomas,TE,80.0,8.0,Indiana; Nassau CC,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/gvpwnq0mjefjlekgzxro",TE,48.18,48.18,1.0,4,0,,44.51,0.8,4,1,veteran,partial
+00-0039066,Michael Mayer,TE,87.0,3.0,Notre Dame,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/crb4nzumiww6ftxcyiqm",TE,45.67,45.67,1.0,4,0,,74.84,1.0,5,0,veteran,yes
+00-0038590,Justin Shorter,TE,88.0,3.0,Florida; Penn State,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/htymyxoyw1hh52zoo3lb",TE,45.0,45.0,1.0,4,0,,18.98,0.4,2,3,veteran,yes
+00-0036423,Albert Okwuegbunam,TE,85.0,6.0,Missouri,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/gww1gus87vabpsalkrpc",TE,40.71,81.42,0.5,2,2,"vertical, broad_jump",31.73,0.6667,8,4,sophomore_high_snap,partial
+GUR131030,Patrick Gurd,TE,,,,,TE,34.52,69.03,0.5,2,2,"vertical, broad_jump",0.0,0.0,0,7,rookie,partial
+00-0040488,Carter Runyon,TE,84.0,1.0,Towson; Shenandoah University,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/q8knlo3npxhjxiyyx4h6",TE,33.45,66.91,0.5,2,2,"vertical, broad_jump",3.25,0.3333,4,8,sophomore_low_snap,yes
+00-0039338,Brock Bowers,TE,89.0,2.0,Georgia,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/uzp2ffi0lomamxofsrhy",TE,24.21,48.42,0.5,2,2,"vertical, broad_jump",46.51,1.0,5,0,veteran,yes
+00-0037291,Jalen Nailor,WR,9.0,4.0,Michigan State,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/sdsx2pttiiwbfpyuuwiz",WR,64.99,64.99,1.0,5,0,,67.96,1.0,6,0,veteran,yes
+00-0040729,Jack Bech,WR,18.0,1.0,TCU; LSU,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/feplgtl0x1svqen9szwv",WR,55.71,69.64,0.8,4,1,forty,52.71,0.9231,12,1,sophomore_low_snap,yes
+ROB111721,Chase Roberts,WR,,,,,WR,53.83,53.83,1.0,5,0,,37.94,0.7143,5,2,rookie,partial
+00-0032208,Phillip Dorsett,WR,13.0,11.0,Miami,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/zkmdppfkcxqn5iwlcsyy",WR,50.96,50.96,1.0,5,0,,45.55,1.0,7,0,rookie,yes
+00-0040581,Dont'e Thornton Jr.,WR,10.0,1.0,Tennessee; Oregon,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/hlxztd3lpjaxtzojuxwh",WR,45.64,45.64,1.0,5,0,,44.26,0.6923,9,4,sophomore_high_snap,yes
+00-0038563,Tre Tucker,WR,1.0,3.0,Cincinnati,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/fsx05ats4azj8mus03d4",WR,41.82,41.82,1.0,5,0,,83.76,1.0,6,0,veteran,yes
+BEN601117,Malik Benson,WR,,,,,WR,37.62,94.04,0.4,2,3,"forty, vertical, broad_jump",0.0,0.0,0,7,rookie,partial
+00-0038891,Shedrick Jackson,WR,4.0,3.0,Auburn,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/el1geev5wxc1cqbbrou7",WR,37.55,93.88,0.4,2,3,"forty, vertical, broad_jump",5.8,0.3077,4,9,sophomore_low_snap,yes
+WIL577959,E.J. Williams Jr.,WR,,,,,WR,28.86,72.15,0.4,2,3,"forty, vertical, broad_jump",0.0,0.0,0,7,rookie,partial
+RUC514959,Corey Rucker,WR,,,,,WR,27.93,69.83,0.4,2,3,"forty, vertical, broad_jump",0.0,0.0,0,7,rookie,partial
+00-0037093,Dareke Young,WR,81.0,4.0,Lenoir Rhyne,"https://static.www.nfl.com/image/upload/f_auto,q_auto/league/umjr6zhpksws2vpfo0qe",WR,27.64,69.09,0.4,2,3,"forty, vertical, broad_jump",37.43,0.6667,4,2,veteran,yes
+BRA342173,Jonathan Brady,WR,,,,,WR,22.4,56.01,0.4,2,3,"forty, vertical, broad_jump",0.0,0.0,0,7,rookie,partial

@@ -1,12 +1,11 @@
-"""Shared helpers for the Streamlit app: DuckDB readers with caching."""
+"""Shared helpers for the Streamlit app: CSV readers with caching."""
 
 from pathlib import Path
 
-import duckdb
 import pandas as pd
 import streamlit as st
 
-DB_PATH = str(Path(__file__).parent.parent / "data" / "raw" / "nfl.duckdb")
+DATA_DIR = Path(__file__).parent.parent / "data" / "processed"
 
 # Physical feature lists per position (mirrors src/archetype.py)
 PHYSICAL_FEATURES = {
@@ -57,70 +56,31 @@ def normalize_feature(feat: str, value) -> float | None:
 @st.cache_data(ttl=600)
 def load_roster_grades() -> pd.DataFrame:
     """Return a single DataFrame joining physical, statistical, scheme experience, and roster."""
-    con = duckdb.connect(DB_PATH)
-    df = con.execute("""
-        SELECT
-            r.player_id,
-            r.player_name,
-            r.position,
-            r.jersey_number,
-            r.years_exp,
-            r.college,
-            r.headshot_url,
-            phys.position_group,
-            phys.grade        AS physical_grade,
-            phys.raw_grade    AS physical_raw,
-            phys.coverage     AS physical_coverage,
-            phys.features_used        AS physical_features_used,
-            phys.features_missing     AS physical_features_missing,
-            phys.missing_feature_names AS physical_missing_names,
-            stat.grade        AS statistical_grade,
-            stat.coverage     AS statistical_coverage,
-            stat.features_used        AS statistical_features_used,
-            stat.features_missing     AS statistical_features_missing,
-            stat.experience_bucket,
-            COALESCE(sx.scheme_experience, 'unknown') AS scheme_experience
-        FROM rosters r
-        LEFT JOIN raiders_physical_player_grades phys ON phys.player_id = r.player_id
-        LEFT JOIN raiders_player_grades          stat ON stat.player_id  = r.player_id
-        LEFT JOIN scheme_experience              sx   ON sx.player_id    = r.player_id
-        WHERE r.season = 2026 AND r.team = 'LV'
-          AND r.position IN ('QB','RB','FB','WR','TE','T','G','C','OT','OG','OL')
-        ORDER BY phys.position_group, phys.grade DESC NULLS LAST
-    """).fetchdf()
-    con.close()
-    return df
+    return pd.read_csv(DATA_DIR / "roster_grades.csv")
 
 
 @st.cache_data(ttl=600)
 def load_offense_summary() -> dict:
     """Return both offense summaries (physical and statistical)."""
-    con = duckdb.connect(DB_PATH)
-    physical    = con.execute("SELECT * FROM raiders_physical_offense_summary").fetchdf()
-    statistical = con.execute("SELECT * FROM raiders_offense_summary").fetchdf()
-    con.close()
-    return {"physical": physical, "statistical": statistical}
+    return {
+        "physical":    pd.read_csv(DATA_DIR / "physical_offense_summary.csv"),
+        "statistical": pd.read_csv(DATA_DIR / "offense_summary.csv"),
+    }
 
 
 @st.cache_data(ttl=600)
 def load_scheme_profile() -> pd.DataFrame:
     """Return Kubiak's scheme profile (play-call rates by RZ vs non-RZ)."""
-    con = duckdb.connect(DB_PATH)
-    df = con.execute("SELECT * FROM kubiak_scheme_profile").fetchdf()
-    con.close()
-    return df
+    return pd.read_csv(DATA_DIR / "scheme_profile.csv")
 
 
 @st.cache_data(ttl=600)
 def load_archetypes() -> dict:
     """Return both archetype tables (physical and performance)."""
-    con = duckdb.connect(DB_PATH)
-    result = {
-        "physical":    con.execute("SELECT * FROM kubiak_physical_archetypes").fetchdf(),
-        "performance": con.execute("SELECT * FROM kubiak_position_archetypes").fetchdf(),
+    return {
+        "physical":    pd.read_csv(DATA_DIR / "physical_archetypes.csv"),
+        "performance": pd.read_csv(DATA_DIR / "position_archetypes.csv"),
     }
-    con.close()
-    return result
 
 
 @st.cache_data(ttl=600)
@@ -134,45 +94,26 @@ def load_player_physical_features(player_id: str, position_group: str) -> dict:
     if not features:
         return {}
 
-    con = duckdb.connect(DB_PATH)
-    row = con.execute("""
-        SELECT
-            AVG(r.height)     AS ht,
-            AVG(r.weight)     AS wt,
-            MAX(c.forty)      AS forty,
-            MAX(c.shuttle)    AS shuttle,
-            MAX(c.cone)       AS cone,
-            MAX(c.vertical)   AS vertical,
-            MAX(c.broad_jump) AS broad_jump
-        FROM rosters r
-        LEFT JOIN combine c ON c.pfr_id = COALESCE(
-            r.pfr_id,
-            (SELECT pfr_player_id FROM snap_counts WHERE player = r.player_name LIMIT 1)
-        )
-        WHERE r.player_id = ?
-        GROUP BY r.player_id
-    """, [player_id]).fetchone()
+    combine_df = pd.read_csv(DATA_DIR / "player_combine.csv")
+    arch_df    = pd.read_csv(DATA_DIR / "physical_archetypes.csv")
 
-    arch_row = con.execute(
-        "SELECT * FROM kubiak_physical_archetypes WHERE position_group = ?",
-        [position_group],
-    ).fetchdf()
-    con.close()
+    player_row = combine_df[combine_df["player_id"] == player_id]
+    arch_row   = arch_df[arch_df["position_group"] == position_group]
 
-    if row is None or arch_row.empty:
+    if player_row.empty or arch_row.empty:
         return {}
 
-    arch = arch_row.iloc[0]
-    raw_map = {"ht": row[0], "wt": row[1], "forty": row[2],
-               "shuttle": row[3], "cone": row[4],
-               "vertical": row[5], "broad_jump": row[6]}
+    player = player_row.iloc[0]
+    arch   = arch_row.iloc[0]
 
     result = {}
     for feat in features:
-        pval = raw_map.get(feat)
-        aval = float(arch[feat]) if feat in arch.index and not pd.isna(arch[feat]) else None
+        pval = player.get(feat)
+        aval = arch.get(feat)
+        pval = float(pval) if pval is not None and not pd.isna(pval) else None
+        aval = float(aval) if aval is not None and not pd.isna(aval) else None
         result[feat] = {
-            "player":    float(pval) if pval is not None else None,
+            "player":    pval,
             "archetype": aval,
             "player_norm": normalize_feature(feat, pval),
             "arch_norm":   normalize_feature(feat, aval),
