@@ -1,4 +1,4 @@
-"""Raiders Analysis 2026 - Team Fit: roster overview page."""
+"""Las Vegas Raiders 2026 Scheme Fit Analysis: roster overview page."""
 
 import sys
 from pathlib import Path
@@ -17,14 +17,14 @@ from utils import (
     load_roster_grades,
 )
 
-st.set_page_config(page_title="Team Fit", layout="wide")
+st.set_page_config(page_title="Las Vegas Raiders 2026 Scheme Fit Analysis", layout="wide")
 
 # Header row: logo + title
 logo_col, title_col = st.columns([1, 7])
 with logo_col:
     st.image(RAIDERS_LOGO, width=90)
 with title_col:
-    st.title("Team Fit")
+    st.title("Las Vegas Raiders 2026 Scheme Fit Analysis")
     st.caption(
         "Grading the 2026 Las Vegas Raiders offensive roster against Klint Kubiak's "
         "scheme tendencies from 2024 New Orleans (40%) and 2025 Seattle (60%)."

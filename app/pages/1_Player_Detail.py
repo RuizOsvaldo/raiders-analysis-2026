@@ -18,7 +18,7 @@ from utils import (
     load_roster_grades,
 )
 
-st.set_page_config(page_title="Team Fit | Player Detail", layout="wide")
+st.set_page_config(page_title="Las Vegas Raiders 2026 | Player Detail", layout="wide")
 st.title("Player Detail")
 
 df = load_roster_grades()
