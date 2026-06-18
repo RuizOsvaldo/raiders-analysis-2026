@@ -1,4 +1,5 @@
-"""Build Kubiak scheme profile and position archetypes from 2024 Saints and 2025 Seahawks."""
+"""Build Kubiak scheme profile and position archetypes from his recency-weighted
+reference seasons (2021 Vikings, 2024 Saints, 2025 Seahawks)."""
 
 import re
 
@@ -219,7 +220,10 @@ def get_reference_players() -> pd.DataFrame:
 
 
 def build_scheme_profile() -> pd.DataFrame:
-    """Build Kubiak's scheme profile from PBP + FTN, weighted 40/60.
+    """Build Kubiak's scheme profile from PBP + FTN, recency-weighted.
+
+    Only the FTN-charted reference seasons contribute (2024 NO, 2025 SEA), so
+    their REFERENCE weights (0.35, 0.50) renormalize to ~41/59 between them.
 
     Output: one row per red_zone value (0/1), with columns for each metric.
     Columns include: play_action_rate, motion_rate, shotgun_rate, no_huddle_rate,
@@ -281,7 +285,8 @@ def build_scheme_profile() -> pd.DataFrame:
     if raw.empty:
         raise RuntimeError("scheme profile query returned empty rows")
 
-    # Apply 40/60 weighting per team
+    # Apply per-team recency weights; renormalized below since only the
+    # FTN-charted seasons (2024 NO, 2025 SEA) are present here.
     raw["weight"] = raw["team"].map(lambda t: REFERENCE[t]["weight"])
 
     metric_cols = [
