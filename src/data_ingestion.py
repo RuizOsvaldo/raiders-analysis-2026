@@ -5,8 +5,102 @@ import pathlib
 import duckdb
 import nfl_data_py as nfl
 import nflreadpy as nflr
+import pandas as pd
 
 DB_PATH = str(pathlib.Path(__file__).parent.parent / "data" / "raw" / "nfl.duckdb")
+RAW_DIR = pathlib.Path(__file__).parent.parent / "data" / "raw"
+
+
+def ingest_pff_blocking(seasons: list[int]) -> None:
+    """Load manually-exported PFF offensive-line blocking CSVs into DuckDB.
+
+    PFF is a paid source with no API at the consumer tier, so these files are
+    exported by hand from the PFF Premium 'Blocking Grades' report (one CSV per
+    season, league-wide) and dropped in data/raw/ as pff_blocking_<season>.csv.
+    They provide the per-player blocking signal that free data cannot: pass- and
+    run-block grades, pass-block efficiency (pbe), and pressures allowed. The
+    files are gitignored (proprietary). Join key downstream is player name +
+    team + season, since rosters.pff_id is unpopulated.
+    """
+    keep = [
+        "player", "position", "team_name", "player_game_count",
+        "grades_offense", "grades_pass_block", "grades_run_block", "pbe",
+        "pressures_allowed", "sacks_allowed", "hits_allowed", "hurries_allowed",
+        "penalties", "snap_counts_offense", "snap_counts_pass_block",
+        "snap_counts_run_block",
+    ]
+    frames = []
+    for yr in seasons:
+        path = RAW_DIR / f"pff_blocking_{yr}.csv"
+        if not path.exists():
+            raise RuntimeError(f"Missing PFF export {path}. Export it from PFF Premium.")
+        df = pd.read_csv(path)
+        df = df[[c for c in keep if c in df.columns]].copy()
+        df["season"] = yr
+        df["level"] = "nfl"
+        frames.append(df)
+
+    # Optional PFF College blocking (same columns, same 0-100 PFF scale). Used to
+    # grade rookie linemen on their final college season, since they have no NFL
+    # blocking yet. PFF grades are curved within league, so college and NFL grades
+    # are roughly comparable; a small mean-offset correction is applied at scoring.
+    college_path = RAW_DIR / "pff_blocking_ncaa_2025.csv"
+    if college_path.exists():
+        c = pd.read_csv(college_path)
+        c = c[[col for col in keep if col in c.columns]].copy()
+        c["season"] = 2025
+        c["level"] = "college"
+        frames.append(c)
+        print(f"  + PFF College 2025: {len(c)} rows")
+
+    out = pd.concat(frames, ignore_index=True)
+    con = duckdb.connect(DB_PATH)
+    con.execute("DROP TABLE IF EXISTS pff_blocking")
+    con.register("df", out)
+    con.execute("CREATE TABLE pff_blocking AS SELECT * FROM df")
+    con.close()
+    print(f"  pff_blocking: {len(out)} rows (NFL seasons {seasons} + college)")
+
+
+def ingest_pff_skill(report: str, seasons: list[int]) -> None:
+    """Load a PFF skill report (passing / receiving / rushing) into DuckDB.
+
+    NFL files: data/raw/<report>_summary_<season>.csv (level='nfl').
+    College : data/raw/ncaa_<report>_summary_2025.csv (level='college').
+    All columns are kept; scoring selects the per-position feature subset.
+    Joined to players by normalized name + team + season (no nflverse id in PFF).
+    """
+    frames = []
+    for yr in seasons:
+        path = RAW_DIR / f"{report}_summary_{yr}.csv"
+        if not path.exists():
+            raise RuntimeError(f"Missing PFF export {path}.")
+        df = pd.read_csv(path)
+        df["season"] = yr
+        df["level"] = "nfl"
+        frames.append(df)
+
+    college_path = RAW_DIR / f"ncaa_{report}_summary_2025.csv"
+    if college_path.exists():
+        c = pd.read_csv(college_path)
+        c["season"] = 2025
+        c["level"] = "college"
+        frames.append(c)
+        print(f"  + PFF College {report} 2025: {len(c)} rows")
+
+    out = pd.concat(frames, ignore_index=True)
+    # Derived zone-run rate: the most scheme-specific RB feature for a zone
+    # (wide-zone) offense like Kubiak's. zone_attempts / (zone + gap).
+    if {"zone_attempts", "gap_attempts"}.issubset(out.columns):
+        denom = out["zone_attempts"].fillna(0) + out["gap_attempts"].fillna(0)
+        out["zone_rate"] = (out["zone_attempts"] / denom).where(denom > 0)
+    table = f"pff_{report}"
+    con = duckdb.connect(DB_PATH)
+    con.execute(f"DROP TABLE IF EXISTS {table}")
+    con.register("df", out)
+    con.execute(f"CREATE TABLE {table} AS SELECT * FROM df")
+    con.close()
+    print(f"  {table}: {len(out)} rows (NFL {seasons} + college)")
 
 
 def ingest_snap_counts(years: list[int]) -> None:
@@ -148,16 +242,30 @@ def ingest_ftn(years: list[int]) -> None:
 
 
 def main() -> None:
-    """Run all ingest functions with years matched to what nflverse has published."""
-    ingest_snap_counts([2024, 2025])
-    ingest_weekly_stats([2024, 2025])
-    ingest_combine([2024, 2025])
-    ingest_ngs_passing([2024, 2025])
-    ingest_ngs_rushing([2024, 2025])
-    ingest_ngs_receiving([2024, 2025])
-    ingest_rosters([2024, 2025, 2026])
-    ingest_pbp([2024, 2025])
+    """Run all ingest functions with years matched to what nflverse has published.
+
+    Reference seasons: 2021 MIN (Klint Kubiak's first OC year), 2024 NO, 2025 SEA.
+    FTN charting only exists from 2022 on, so it is pulled for 2024/2025 only;
+    2021 reference players contribute physical and non-FTN performance features.
+    Combine is pulled broadly because veterans/reference players span many draft
+    classes (a 2024-only combine pull would leave most players with no testing).
+    """
+    ref_years = [2021, 2024, 2025]
+    ingest_snap_counts(ref_years)
+    ingest_weekly_stats(ref_years)
+    ingest_combine(list(range(2010, 2027)))
+    ingest_ngs_passing(ref_years)
+    ingest_ngs_rushing(ref_years)
+    ingest_ngs_receiving(ref_years)
+    ingest_rosters([2021, 2024, 2025, 2026])
+    ingest_pbp(ref_years)
     ingest_ftn([2024, 2025])
+    ingest_pff_blocking(ref_years)
+    for report in ("passing", "receiving", "rushing"):
+        ingest_pff_skill(report, ref_years)
+    # Restore 2026 OTA additions wiped by the roster re-ingest above.
+    from ota_roster_patch import apply_ota_patch
+    apply_ota_patch()
     print("Ingestion complete.")
 
 

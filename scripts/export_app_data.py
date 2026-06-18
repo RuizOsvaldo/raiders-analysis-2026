@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import duckdb
-import pandas as pd
 
 DB_PATH = Path(__file__).parent.parent / "data" / "raw" / "nfl.duckdb"
 OUT_DIR  = Path(__file__).parent.parent / "data" / "processed"
@@ -20,17 +19,24 @@ roster_grades = con.execute("""
         r.years_exp,
         r.college,
         r.headshot_url,
-        phys.position_group,
-        phys.grade        AS physical_grade,
-        phys.raw_grade    AS physical_raw,
-        phys.coverage     AS physical_coverage,
-        phys.features_used        AS physical_features_used,
-        phys.features_missing     AS physical_features_missing,
-        phys.missing_feature_names AS physical_missing_names,
-        stat.grade        AS statistical_grade,
-        stat.coverage     AS statistical_coverage,
-        stat.features_used        AS statistical_features_used,
-        stat.features_missing     AS statistical_features_missing,
+        stat.position_group,
+        -- Headline grade = PFF scheme fit (performance model). Column names kept
+        -- as physical_* for app compatibility; they now carry the scheme-fit grade.
+        stat.grade        AS physical_grade,
+        stat.raw_grade    AS physical_raw,
+        stat.coverage     AS physical_coverage,
+        stat.ci_low       AS physical_ci_low,
+        stat.ci_high      AS physical_ci_high,
+        stat.features_used        AS physical_features_used,
+        stat.features_missing     AS physical_features_missing,
+        stat.missing_feature_names AS physical_missing_names,
+        -- Secondary grade = athletic / combine profile.
+        phys.grade        AS statistical_grade,
+        phys.coverage     AS statistical_coverage,
+        phys.ci_low       AS statistical_ci_low,
+        phys.ci_high      AS statistical_ci_high,
+        phys.features_used        AS statistical_features_used,
+        phys.features_missing     AS statistical_features_missing,
         stat.experience_bucket,
         COALESCE(sx.scheme_experience, 'unknown') AS scheme_experience
     FROM rosters r
@@ -39,7 +45,7 @@ roster_grades = con.execute("""
     LEFT JOIN scheme_experience              sx   ON sx.player_id    = r.player_id
     WHERE r.season = 2026 AND r.team = 'LV'
       AND r.position IN ('QB','RB','FB','WR','TE','T','G','C','OT','OG','OL')
-    ORDER BY phys.position_group, phys.grade DESC NULLS LAST
+    ORDER BY stat.position_group, stat.grade DESC NULLS LAST
 """).fetchdf()
 
 # Per-player combine measurables (for load_player_physical_features)

@@ -58,30 +58,32 @@ with bio_col:
     st.markdown(f"NFL bucket: **{player['experience_bucket']}**")
 
 with phys_col:
+    # Primary grade = PFF scheme fit (individual PFF grades + profile metrics
+    # vs Kubiak's archetype). Veterans on NFL PFF, rookies on college PFF.
     phys = player["physical_grade"]
-    st.metric("Physical Fit", f"{phys:.1f}" if pd.notna(phys) else "N/A")
+    st.metric("Scheme Fit (PFF)", f"{phys:.1f}" if pd.notna(phys) else "N/A")
     st.caption(coverage_label(player["physical_coverage"]))
 
 with stat_col:
     stat = player["statistical_grade"]
-    st.metric("Statistical", f"{stat:.1f}" if pd.notna(stat) else "N/A")
+    st.metric("Athletic Profile", f"{stat:.1f}" if pd.notna(stat) else "N/A")
     st.caption(coverage_label(player["statistical_coverage"]))
 
 with raw_col:
-    raw = player["physical_raw"]
-    cov = player["physical_coverage"]
-    if pd.notna(raw) and pd.notna(cov):
-        st.metric("Pre-penalty", f"{raw:.1f}")
-        st.caption(f"x {cov:.0%} = {phys:.1f}")
+    lo = player.get("physical_ci_low")
+    hi = player.get("physical_ci_high")
+    if pd.notna(lo) and pd.notna(hi):
+        st.metric("Confidence band", f"{lo:.0f}–{hi:.0f}")
+        st.caption("Widens when data is missing")
     else:
-        st.metric("Pre-penalty", "N/A")
+        st.metric("Confidence band", "N/A")
 
 # Missing features warning
 if pd.notna(player["physical_missing_names"]) and player["physical_missing_names"]:
     n_used  = int(player["physical_features_used"])
     n_total = n_used + int(player["physical_features_missing"])
     st.warning(
-        f"Missing combine data: **{player['physical_missing_names']}**. "
+        f"Missing PFF data: **{player['physical_missing_names']}**. "
         f"Grade uses {n_used} of {n_total} features."
     )
 

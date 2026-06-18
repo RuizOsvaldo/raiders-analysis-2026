@@ -41,7 +41,7 @@ Kubiak's scheme has historically rewarded?
 
 Performance-based. Compares a player's recent NFL statistics (last two
 seasons) against Kubiak's reference players' statistics at that position.
-Same distance calculation, same grade formula, same coverage penalty.
+Same distance calculation and grade formula as Physical Fit.
 
 This grade conflates three things: physical traits, system experience, and
 recent performance. Low Statistical Similarity often means a player has not
@@ -59,18 +59,24 @@ A manually-curated tag indicating prior NFL experience in a Kubiak-tree offense:
   heavy play-action) or played under a scheme with mixed influences
 - **no**: different scheme entirely (power run, Air Raid, RPO-heavy spread, etc.)
 
-## Coverage penalty
+## Missing data and coverage
 
-Every grade is penalized when the underlying data is incomplete:
+A missing measurement makes a grade *less certain*, not *worse*. Earlier
+versions multiplied the grade by coverage (`grade = raw_grade * features_present
+/ features_total`), which penalized the players we knew least about. That penalty
+has been removed.
 
-```
-coverage = features_with_data / total_features_for_position
-grade = raw_grade * coverage
-```
+Instead, the grade is a root-mean-square distance over the features that are
+available, so it is on the same scale regardless of how many features a player
+has on file. The uncertainty lives entirely in the confidence interval, which
+widens when data is missing. Height and weight always exist in roster data, so a
+player who never attended the combine is still scored on ht/wt rather than
+dropping to zero.
 
-A player missing three of five combine events gets a grade worth at most
-60% of what it would be with full data. This is the most important
-user-facing safety rail: never trust a high grade with low coverage.
+Coverage is still shown next to each grade as a data-completeness indicator:
+read a high grade with low coverage as "promising but uncertain" -- and look at
+the width of the confidence band, which is now where that uncertainty is
+expressed.
 
 ## Data sources
 
@@ -83,7 +89,7 @@ nfl_data_py and nflreadpy:
 ## Known limitations
 
 - Personnel groupings (11/12/21 personnel) require paid data (PFF) and are not used
-- Individual OL blocking grades require paid charting; team-level proxies are used instead
+- Individual OL blocking grades come from PFF Premium (pass-block grade, run-block grade, pass-block efficiency), manually exported and joined by name
 - Roughly 9% of plays did not match between PBP and FTN charting and were excluded
 - 24% of reference players have no combine record; these contribute only height and weight
 - Combine coverage is weakest for offensive linemen

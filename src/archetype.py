@@ -1,15 +1,66 @@
 """Build Kubiak scheme profile and position archetypes from 2024 Saints and 2025 Seahawks."""
 
+import re
+
 import duckdb
 import pandas as pd
 
 DB_PATH = "data/raw/nfl.duckdb"
 
-# Reference teams, weighted per handoff design
+_SUFFIX_RE = re.compile(r"\s+(jr|sr|ii|iii|iv)$")
+
+
+def norm_name(s) -> str:
+    """Normalize a player name for cross-source joins: lowercase, drop periods,
+    strip a trailing generational suffix (Jr/Sr/II/III/IV). Makes 'Trey Zuhn III'
+    match 'Trey Zuhn' and 'D.J. Glaze' match 'DJ Glaze'."""
+    s = str(s).lower().replace(".", "").strip()
+    return _SUFFIX_RE.sub("", s).strip()
+
+
+def norm_sql(col: str) -> str:
+    """SQL expression normalizing a name column the same way as norm_name()."""
+    return (f"trim(regexp_replace(replace(lower({col}), '.', ''), "
+            f"'\\s+(jr|sr|ii|iii|iv)$', ''))")
+
+# Reference team-seasons that define Kubiak's archetype, recency-weighted.
+# 2025 SEA (most recent, most autonomy) > 2024 NO > 2021 MIN (his first OC year,
+# Cousins/Cook/Jefferson). 2021 has no FTN charting (nflverse starts 2022), so
+# its players abstain from FTN-derived features (play-action %, motion, RPO,
+# out-of-pocket) via the inner joins to ftn, but still contribute physical
+# traits and non-FTN performance. To add a future season, add one line here.
 REFERENCE = {
-    "NO": {"season": 2024, "weight": 0.40},
-    "SEA": {"season": 2025, "weight": 0.60},
+    "MIN": {"season": 2021, "weight": 0.15},
+    "NO":  {"season": 2024, "weight": 0.35},
+    "SEA": {"season": 2025, "weight": 0.50},
 }
+
+# Seasons that have FTN charting available (nflverse FTN begins 2022). Used to
+# scope the scheme profile, which is built entirely from FTN tendency rates.
+FTN_SEASONS = {s["season"] for s in REFERENCE.values() if s["season"] >= 2022}
+
+
+def ref_pairs_sql(team_col: str = "posteam", season_col: str = "season") -> str:
+    """SQL predicate matching any reference team-season, e.g.
+    "((posteam='MIN' AND season=2021) OR (posteam='NO' AND season=2024) ...)"."""
+    parts = [f"({team_col}='{t}' AND {season_col}={c['season']})" for t, c in REFERENCE.items()]
+    return "(" + " OR ".join(parts) + ")"
+
+
+def ref_weight_case(season_col: str = "season") -> str:
+    """SQL CASE returning each reference season's weight (0 otherwise)."""
+    whens = " ".join(f"WHEN {season_col}={c['season']} THEN {c['weight']}" for c in REFERENCE.values())
+    return f"CASE {whens} ELSE 0 END"
+
+
+def ref_team_for_season_case(season_col: str = "season") -> str:
+    """SQL CASE mapping a reference season to its team (each season is unique)."""
+    whens = " ".join(f"WHEN {season_col}={c['season']} THEN '{t}'" for t, c in REFERENCE.items())
+    return f"CASE {whens} END"
+
+
+def ref_seasons() -> list[int]:
+    return [c["season"] for c in REFERENCE.values()]
 
 # Inclusion floor: a player must have at least 20% offensive snap share
 # in at least 4 games of the season to feed the archetype
@@ -46,6 +97,71 @@ PHYSICAL_POSITION_MAP = {
 }
 
 
+# Per-position PFF feature model. Every offensive group is now graded on
+# individual PFF metrics (grades + scheme-relevant profile stats) instead of the
+# old team/NGS proxies. `report` is the PFF table, `snap_col` weights the
+# archetype and gates the league scaler, `features` is the per-position vector,
+# and `one_sided` marks pure-quality positions (OL) where exceeding the archetype
+# is not a deviation. Skill positions are profile-matched (two-sided).
+PFF_SKILL = {
+    "QB": {"report": "pff_passing", "snap_col": "passing_snaps", "min_snaps": 150,
+           "one_sided": False,
+           "features": ["grades_pass", "btt_rate", "twp_rate", "avg_depth_of_target",
+                        "avg_time_to_throw", "accuracy_percent", "pressure_to_sack_rate"]},
+    "WR": {"report": "pff_receiving", "snap_col": "routes", "min_snaps": 150,
+           "one_sided": False,
+           "features": ["grades_pass_route", "yprr", "avg_depth_of_target", "slot_rate",
+                        "yards_after_catch_per_reception", "contested_catch_rate",
+                        "targeted_qb_rating"]},
+    "TE": {"report": "pff_receiving", "snap_col": "routes", "min_snaps": 100,
+           "one_sided": False,
+           "features": ["grades_pass_route", "grades_pass_block", "yprr",
+                        "avg_depth_of_target", "inline_rate", "route_rate"]},
+    "RB": {"report": "pff_rushing", "snap_col": "run_plays", "min_snaps": 60,
+           "one_sided": False,
+           "features": ["grades_run", "elusive_rating", "yco_attempt", "breakaway_percent",
+                        "yprr", "zone_rate"]},
+    "OL": {"report": "pff_blocking", "snap_col": "snap_counts_offense", "min_snaps": 200,
+           "one_sided": True,
+           "features": ["grades_pass_block", "grades_run_block", "pbe"]},
+}
+
+
+def _pff_skill_archetype(group: str, ref_players: pd.DataFrame) -> pd.Series:
+    """Snap-weighted mean of Kubiak's reference players' PFF features for a group.
+
+    Reference players are matched into the PFF report by normalized name + team +
+    reference season; each contributes in proportion to snaps * recency weight.
+    """
+    cfg = PFF_SKILL[group]
+    positions = [p for p, g in PHYSICAL_POSITION_MAP.items() if g == group]
+    refs = ref_players[ref_players["position"].isin(positions)].copy()
+    if refs.empty:
+        raise RuntimeError(f"No {group} reference players")
+    refs["name_key"] = refs["player"].map(norm_name)
+
+    con = duckdb.connect(DB_PATH)
+    con.register("skill_ref", refs[["name_key", "team", "season", "weight"]])
+    sel = ", ".join(f"p.{f}" for f in cfg["features"])
+    pff = con.execute(f"""
+        SELECT {sel}, p.{cfg['snap_col']} AS snaps, r.weight
+        FROM {cfg['report']} p
+        JOIN skill_ref r ON {norm_sql('p.player')} = r.name_key
+                        AND p.season = r.season AND p.team_name = r.team
+        WHERE p.level = 'nfl'
+    """).fetchdf()
+    con.close()
+    if pff.empty:
+        raise RuntimeError(f"No reference {group} matched into {cfg['report']}")
+
+    pff["agg_weight"] = pff["snaps"].fillna(0).astype(float) * pff["weight"]
+    out = {}
+    for f in cfg["features"]:
+        valid = pff[pff[f].notna() & (pff["agg_weight"] > 0)]
+        out[f] = float((valid[f] * valid["agg_weight"]).sum() / valid["agg_weight"].sum())
+    return pd.Series(out)
+
+
 def get_reference_players() -> pd.DataFrame:
     """Return players who met the snap floor on the reference Kubiak teams.
 
@@ -53,7 +169,7 @@ def get_reference_players() -> pd.DataFrame:
                     avg_snap_share, total_offensive_snaps, weight, gsis_id
     """
     con = duckdb.connect(DB_PATH)
-    query = """
+    query = f"""
         WITH per_game AS (
             SELECT
                 pfr_player_id AS player_id,
@@ -65,8 +181,7 @@ def get_reference_players() -> pd.DataFrame:
                 offense_pct AS snap_share,
                 offense_snaps AS snaps
             FROM snap_counts
-            WHERE (team = 'NO' AND season = 2024)
-               OR (team = 'SEA' AND season = 2025)
+            WHERE {ref_pairs_sql("team", "season")}
         ),
         qualifying AS (
             SELECT
@@ -110,8 +225,16 @@ def build_scheme_profile() -> pd.DataFrame:
     Columns include: play_action_rate, motion_rate, shotgun_rate, no_huddle_rate,
                      screen_rate, rpo_rate, pass_rate, avg_epa, play_count
     """
+    # Scheme profile is built entirely from FTN tendency rates, so it is scoped
+    # to the reference seasons that have FTN charting (>= 2022). Earlier seasons
+    # (e.g. 2021 MIN) contribute to player archetypes but not to this profile.
+    ftn_filter = "(" + " OR ".join(
+        f"(p.posteam='{t}' AND p.season={c['season']})"
+        for t, c in REFERENCE.items() if c["season"] in FTN_SEASONS
+    ) + ")"
+
     con = duckdb.connect(DB_PATH)
-    query = """
+    query = f"""
         WITH plays AS (
             SELECT
                 p.season,
@@ -132,8 +255,7 @@ def build_scheme_profile() -> pd.DataFrame:
                 ON p.game_id = f.nflverse_game_id
                 AND p.play_id = f.nflverse_play_id
             WHERE
-                ((p.posteam = 'NO' AND p.season = 2024)
-                 OR (p.posteam = 'SEA' AND p.season = 2025))
+                {ftn_filter}
                 AND p.play_type IN ('pass', 'run')
                 AND p.week <= ?
         )
@@ -316,14 +438,14 @@ def _rb_archetype(ref_players: pd.DataFrame) -> pd.Series:
     """, [RZ_YARDLINE, RZ_YARDLINE, REG_SEASON_MAX_WEEK]).fetchdf().iloc[0]
 
     # RZ target share: per-player share (receiver_player_id), then weighted average
-    rz_share = con.execute("""
+    rz_share = con.execute(f"""
         WITH player_rz AS (
             SELECT p.receiver_player_id AS gsis_id, p.season,
                    p.posteam,
                    COUNT(*) AS rz_targets
             FROM pbp p
             WHERE p.play_type = 'pass' AND p.yardline_100 <= ?
-                AND ((p.posteam = 'NO' AND p.season = 2024) OR (p.posteam = 'SEA' AND p.season = 2025))
+                AND {ref_pairs_sql("p.posteam", "p.season")}
                 AND p.week <= ? AND p.receiver_player_id IS NOT NULL
             GROUP BY p.receiver_player_id, p.season, p.posteam
         ),
@@ -331,7 +453,7 @@ def _rb_archetype(ref_players: pd.DataFrame) -> pd.Series:
             SELECT posteam, season, COUNT(*) AS team_total
             FROM pbp
             WHERE play_type = 'pass' AND yardline_100 <= ?
-                AND ((posteam = 'NO' AND season = 2024) OR (posteam = 'SEA' AND season = 2025))
+                AND {ref_pairs_sql("posteam", "season")}
                 AND week <= ?
             GROUP BY posteam, season
         )
@@ -341,7 +463,7 @@ def _rb_archetype(ref_players: pd.DataFrame) -> pd.Series:
             SUM(r.total_offensive_snaps * r.weight)   AS total_weight
         FROM rb_ref r
         JOIN team_rz tt ON r.season = tt.season
-            AND tt.posteam = CASE WHEN r.season = 2024 THEN 'NO' ELSE 'SEA' END
+            AND tt.posteam = {ref_team_for_season_case("r.season")}
         LEFT JOIN player_rz pr ON pr.gsis_id = r.gsis_id AND pr.season = r.season
     """, [RZ_YARDLINE, REG_SEASON_MAX_WEEK, RZ_YARDLINE, REG_SEASON_MAX_WEEK]).fetchdf().iloc[0]
 
@@ -417,13 +539,13 @@ def _wr_archetype(ref_players: pd.DataFrame) -> pd.Series:
     """, [REG_SEASON_MAX_WEEK]).fetchdf().iloc[0]
 
     # RZ target share: per-player share, then weighted average (includes zeros)
-    rz_share = con.execute("""
+    rz_share = con.execute(f"""
         WITH player_rz AS (
             SELECT p.receiver_player_id AS gsis_id, p.season, p.posteam,
                    COUNT(*) AS rz_targets
             FROM pbp p
             WHERE p.play_type = 'pass' AND p.yardline_100 <= ?
-                AND ((p.posteam = 'NO' AND p.season = 2024) OR (p.posteam = 'SEA' AND p.season = 2025))
+                AND {ref_pairs_sql("p.posteam", "p.season")}
                 AND p.week <= ? AND p.receiver_player_id IS NOT NULL
             GROUP BY p.receiver_player_id, p.season, p.posteam
         ),
@@ -431,7 +553,7 @@ def _wr_archetype(ref_players: pd.DataFrame) -> pd.Series:
             SELECT posteam, season, COUNT(*) AS team_total
             FROM pbp
             WHERE play_type = 'pass' AND yardline_100 <= ?
-                AND ((posteam = 'NO' AND season = 2024) OR (posteam = 'SEA' AND season = 2025))
+                AND {ref_pairs_sql("posteam", "season")}
                 AND week <= ?
             GROUP BY posteam, season
         )
@@ -441,7 +563,7 @@ def _wr_archetype(ref_players: pd.DataFrame) -> pd.Series:
             SUM(r.total_offensive_snaps * r.weight)   AS total_weight
         FROM wr_ref r
         JOIN team_rz tt ON r.season = tt.season
-            AND tt.posteam = CASE WHEN r.season = 2024 THEN 'NO' ELSE 'SEA' END
+            AND tt.posteam = {ref_team_for_season_case("r.season")}
         LEFT JOIN player_rz pr ON pr.gsis_id = r.gsis_id AND pr.season = r.season
     """, [RZ_YARDLINE, REG_SEASON_MAX_WEEK, RZ_YARDLINE, REG_SEASON_MAX_WEEK]).fetchdf().iloc[0]
 
@@ -500,13 +622,13 @@ def _te_archetype(ref_players: pd.DataFrame) -> pd.Series:
     """).fetchdf().iloc[0]
 
     # RZ target share: per-player share, then weighted average (includes zeros)
-    rz_tgt = con.execute("""
+    rz_tgt = con.execute(f"""
         WITH player_rz AS (
             SELECT p.receiver_player_id AS gsis_id, p.season, p.posteam,
                    COUNT(*) AS rz_targets
             FROM pbp p
             WHERE p.play_type = 'pass' AND p.yardline_100 <= ?
-                AND ((p.posteam = 'NO' AND p.season = 2024) OR (p.posteam = 'SEA' AND p.season = 2025))
+                AND {ref_pairs_sql("p.posteam", "p.season")}
                 AND p.week <= ? AND p.receiver_player_id IS NOT NULL
             GROUP BY p.receiver_player_id, p.season, p.posteam
         ),
@@ -514,7 +636,7 @@ def _te_archetype(ref_players: pd.DataFrame) -> pd.Series:
             SELECT posteam, season, COUNT(*) AS team_total
             FROM pbp
             WHERE play_type = 'pass' AND yardline_100 <= ?
-                AND ((posteam = 'NO' AND season = 2024) OR (posteam = 'SEA' AND season = 2025))
+                AND {ref_pairs_sql("posteam", "season")}
                 AND week <= ?
             GROUP BY posteam, season
         )
@@ -524,7 +646,7 @@ def _te_archetype(ref_players: pd.DataFrame) -> pd.Series:
             SUM(r.total_offensive_snaps * r.weight)   AS total_weight
         FROM te_ref r
         JOIN team_rz tt ON r.season = tt.season
-            AND tt.posteam = CASE WHEN r.season = 2024 THEN 'NO' ELSE 'SEA' END
+            AND tt.posteam = {ref_team_for_season_case("r.season")}
         LEFT JOIN player_rz pr ON pr.gsis_id = r.gsis_id AND pr.season = r.season
     """, [RZ_YARDLINE, REG_SEASON_MAX_WEEK, RZ_YARDLINE, REG_SEASON_MAX_WEEK]).fetchdf().iloc[0]
 
@@ -546,82 +668,56 @@ def _te_archetype(ref_players: pd.DataFrame) -> pd.Series:
     })
 
 
+# Individual OL blocking grades from PFF (manually exported, see data_ingestion).
+# These replace the old team-level PBP proxies, which could not distinguish one
+# lineman from another. All three are 0-100-ish quality scores, higher = better.
+OL_PFF_FEATURES = ["grades_pass_block", "grades_run_block", "pbe"]
+
+
 def _ol_archetype(ref_players: pd.DataFrame) -> pd.Series:
-    """Build OL archetype feature vector using team-level proxies.
+    """Build OL archetype as the snap-weighted mean of Kubiak's reference
+    linemen's PFF blocking grades (pass-block, run-block, pass-block efficiency).
 
-    Individual OL grade data requires paid services (PFF). These features
-    use team-level PBP proxies instead. position_slot is limited to C/G/T
-    because LT/LG/RG/RT granularity is not available in free data sources.
-
-    Features: rush_epa_guard, rush_epa_tackle, rush_epa_end,
-              team_pressure_rate_allowed, avg_snap_share
+    Reference linemen are matched into the PFF export by player name + team +
+    reference season. Contribution is weighted by offensive snaps * the season's
+    recency weight, so a full-time starter shapes the archetype more than a
+    swing backup.
     """
     ol_refs = ref_players[ref_players["position"].isin(OL_POSITIONS)].copy()
     if ol_refs.empty:
         raise RuntimeError("No OL reference players found")
 
+    ol_refs = ol_refs.copy()
+    ol_refs["name_key"] = ol_refs["player"].map(norm_name)
     con = duckdb.connect(DB_PATH)
-
-    # Team-level rush EPA by run gap, weighted 40/60
-    rush_epa = con.execute("""
-        SELECT
-            run_gap,
-            SUM(CASE WHEN posteam='NO'  AND season=2024 THEN epa*0.40 ELSE
-                     CASE WHEN posteam='SEA' AND season=2025 THEN epa*0.60 ELSE 0 END END) AS wt_epa,
-            SUM(CASE WHEN posteam='NO'  AND season=2024 THEN 0.40 ELSE
-                     CASE WHEN posteam='SEA' AND season=2025 THEN 0.60 ELSE 0 END END) AS wt_plays
-        FROM pbp
-        WHERE ((posteam='NO' AND season=2024) OR (posteam='SEA' AND season=2025))
-            AND play_type = 'run'
-            AND run_gap IS NOT NULL
-            AND week <= ?
-        GROUP BY run_gap
-    """, [REG_SEASON_MAX_WEEK]).fetchdf()
-
-    rush_epa_by_gap = {row["run_gap"]: row["wt_epa"] / row["wt_plays"]
-                       for _, row in rush_epa.iterrows() if row["wt_plays"] > 0}
-
-    # Team pressure rate on dropbacks, weighted 40/60
-    pressure = con.execute("""
-        SELECT
-            SUM(CASE WHEN posteam='NO'  AND season=2024 THEN CAST(was_pressure AS DOUBLE)*0.40 ELSE
-                     CASE WHEN posteam='SEA' AND season=2025 THEN CAST(was_pressure AS DOUBLE)*0.60 ELSE 0 END END) AS wt_pressures,
-            SUM(CASE WHEN posteam='NO'  AND season=2024 THEN 0.40 ELSE
-                     CASE WHEN posteam='SEA' AND season=2025 THEN 0.60 ELSE 0 END END) AS wt_dropbacks
-        FROM pbp
-        WHERE ((posteam='NO' AND season=2024) OR (posteam='SEA' AND season=2025))
-            AND qb_dropback = 1
-            AND week <= ?
-    """, [REG_SEASON_MAX_WEEK]).fetchdf().iloc[0]
-
+    con.register("ol_ref", ol_refs[["name_key", "team", "season", "weight"]])
+    pff = con.execute(f"""
+        SELECT p.player, p.season, r.weight,
+               p.grades_pass_block, p.grades_run_block, p.pbe,
+               p.snap_counts_offense AS snaps
+        FROM pff_blocking p
+        JOIN ol_ref r ON {norm_sql("p.player")} = r.name_key AND p.season = r.season
+                     AND p.team_name = r.team
+        WHERE p.position IN ('C','G','T') AND p.level = 'nfl'
+    """).fetchdf()
     con.close()
 
-    # Average snap share of OL players who passed the floor, weighted by snaps * team_weight
-    snap_share = (ol_refs["avg_snap_share"] * ol_refs["total_offensive_snaps"] * ol_refs["weight"]).sum() / \
-                 (ol_refs["total_offensive_snaps"] * ol_refs["weight"]).sum()
+    if pff.empty:
+        raise RuntimeError("No reference OL matched into pff_blocking. Check name/team/season join.")
 
-    def _safe_div(num, denom):
-        return float(num / denom) if denom and denom > 0 else None
-
-    return pd.Series({
-        "rush_epa_guard":             rush_epa_by_gap.get("guard"),
-        "rush_epa_tackle":            rush_epa_by_gap.get("tackle"),
-        "rush_epa_end":               rush_epa_by_gap.get("end"),
-        "team_pressure_rate_allowed": _safe_div(pressure["wt_pressures"], pressure["wt_dropbacks"]),
-        "avg_snap_share":             float(snap_share) if snap_share is not None else None,
-    })
+    pff["agg_weight"] = pff["snaps"] * pff["weight"]
+    row = {}
+    for feat in OL_PFF_FEATURES:
+        valid = pff[pff[feat].notna()]
+        row[feat] = float((valid[feat] * valid["agg_weight"]).sum() / valid["agg_weight"].sum())
+    return pd.Series(row)
 
 
 def build_position_archetypes() -> pd.DataFrame:
-    """Build all five position-group archetypes and return as a DataFrame."""
+    """Build all five position-group archetypes from PFF data and return a DataFrame."""
     ref_players = get_reference_players()
-    rows = [
-        _qb_archetype(ref_players).rename("QB"),
-        _rb_archetype(ref_players).rename("RB"),
-        _wr_archetype(ref_players).rename("WR"),
-        _te_archetype(ref_players).rename("TE"),
-        _ol_archetype(ref_players).rename("OL"),
-    ]
+    rows = [_pff_skill_archetype(g, ref_players).rename(g)
+            for g in ("QB", "RB", "WR", "TE", "OL")]
     df = pd.concat(rows, axis=1).T
     df.index.name = "position_group"
     return df.reset_index()

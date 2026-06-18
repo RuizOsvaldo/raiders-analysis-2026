@@ -1,12 +1,21 @@
 """Patch the rosters table with current 2026 Raiders OTA players.
 
 These players are not yet in nflreadpy's seasonal roster data (too recent).
-Run this after any ingest_rosters([2026]) call to restore them.
+Run this after any ingest_rosters([...]) call to restore them; the ingestion
+pipeline (data_ingestion.main) calls it automatically. Existence is checked by
+normalized name so a player nflverse has since added under a real id (e.g.
+'Trey Zuhn') is not duplicated.
 
 Sources: ESPN Raiders roster (verified June 2026), nfl_data_py player directory.
 """
 
+import pathlib
+import sys
+
 import duckdb
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from archetype import norm_name  # noqa: E402
 
 DB_PATH = "data/raw/nfl.duckdb"
 
@@ -37,13 +46,15 @@ def apply_ota_patch() -> None:
     cols = [r[1] for r in con.execute("PRAGMA table_info(rosters)").fetchall()]
     has_week = "week" in cols
 
+    # Existing 2026 LV roster names, normalized, so nflverse-added players (under
+    # their real id, possibly without a generational suffix) are not duplicated.
+    existing = {norm_name(r[0]) for r in con.execute(
+        "SELECT player_name FROM rosters WHERE team='LV' AND season=2026"
+    ).fetchall()}
+
     inserted = 0
     for player_id, player_name, position, depth_pos, height, weight, pfr_id in OTA_PLAYERS:
-        exists = con.execute(
-            "SELECT 1 FROM rosters WHERE player_id=? AND team='LV' AND season=2026",
-            [player_id],
-        ).fetchone()
-        if exists:
+        if norm_name(player_name) in existing:
             continue
 
         first = player_name.split()[0]

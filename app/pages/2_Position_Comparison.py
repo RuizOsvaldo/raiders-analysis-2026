@@ -23,9 +23,9 @@ group = st.selectbox(
 group_df = df[df["position_group"] == group].copy()
 group_df = group_df.sort_values("physical_grade", ascending=False)
 
-st.subheader(f"{group} scatter: Physical Fit vs Statistical Similarity")
+st.subheader(f"{group} scatter: Scheme Fit vs Athletic Profile")
 st.caption(
-    "Bubble size = physical coverage (larger = more data). "
+    "Bubble size = data coverage (larger = more data). "
     "Color = scheme experience. "
     "Top-right is the ideal quadrant."
 )
@@ -54,8 +54,8 @@ fig = px.scatter(
     range_x=[0, 100],
     range_y=[0, 100],
     labels={
-        "statistical_grade": "Statistical Similarity",
-        "physical_grade":    "Physical Fit",
+        "statistical_grade": "Athletic Profile",
+        "physical_grade":    "Scheme Fit",
         "scheme_experience": "Scheme Exp",
     },
 )

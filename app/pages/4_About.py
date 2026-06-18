@@ -60,53 +60,79 @@ in the new system. It is the primary grade because it answers the actual questio
 Statistical Similarity is preserved as secondary context -- useful for identifying
 players who have already proven they can produce in a compatible system.
 
+**The running back exception.** Validation (see below) showed combine
+measurables separate Kubiak's players from a control population at QB, WR and
+TE, but *not* at running back -- every NFL back is a similar athlete, so
+40-time and vertical carry no zone-scheme-fit signal. Running back fit is a
+running-*style* question: cutback vision, outside-zone success, work as a
+receiver. So at RB the primary grade is sourced from the **performance model**
+(outside-zone success rate, rush yards over expected, shotgun efficiency, red
+zone usage) instead of physical traits. Every other position stays on Physical
+Fit.
+
 ---
 
-## Why the coverage penalty exists
+## How we know the grades mean something
 
-During testing, the top-ranked players by raw Physical Fit grade were all players
-with only 2 of 5 features on file (height and weight, no combine data). Their
-distance to the archetype was computed on only those 2 features, and happened to
-be small -- but a player who matches on height and weight alone tells you almost
-nothing. Raw grades of 93 and 87 for undrafted players with no combine records
-were clearly artifacts, not real signal.
+The model has no labeled outcome, so it can't report a conventional accuracy.
+What it can show is internal validity: the players who *define* Kubiak's
+archetype should grade higher than an arbitrary control population. They do --
+across QB, RB, WR and TE the reference players average roughly 5-12 points above
+a 250-player control set, with RB the strongest separator now that it uses the
+performance model. This is run by `scripts/validate.py`. It is a necessary
+sanity check, not a substitute for backtesting against real future production --
+which would require outcome data the free sources don't provide.
 
-The fix:
+---
 
-```
-coverage = features_with_data / total_features_for_position
-grade = raw_grade * coverage
-```
+## How missing data is handled
 
-A player graded on 2 of 5 features can score at most 40% of their raw grade.
-A player with full combine data keeps their full grade. This is the most important
-safety rail in the model: high coverage means the grade is trustworthy; low
-coverage means it is a weak signal that should not drive decisions.
+Earlier versions multiplied the grade by a "coverage" factor
+(`grade = raw_grade * features_present / features_total`), so a player scored on
+2 of 5 features could keep at most 40% of their grade. That conflated two
+different things: *how well a player fits* and *how much we know about them*.
+It systematically buried exactly the players we had least data on -- a genuinely
+great physical match missing a combine record ranked below a mediocre one with a
+complete record.
 
-The same penalty applies to Statistical Similarity for the same reason.
+The model now keeps those two ideas separate:
+
+- **The grade (point estimate)** is the root-mean-square standardized distance to
+  the archetype over the features that *are* available. Because it is a mean
+  rather than a sum, it is on the same scale whether a player has 2 features or
+  7 -- missing data no longer biases the grade up or down.
+- **The confidence interval** carries the uncertainty. It widens when features
+  are missing and when the reference set has few players at a position. A player
+  graded on 2 of 5 traits gets the same kind of point estimate as anyone else,
+  but a visibly wider band.
+
+Height and weight always exist in roster data, so a player who simply never
+attended the combine is still scored on ht/wt instead of collapsing to zero.
+Players with no usable features at all for a given model are reported as
+undefined and excluded from unit averages rather than counted as a zero.
+
+Coverage is still shown next to every grade as an honest data-completeness
+indicator -- read a high grade with low coverage as "promising but uncertain,"
+which is what the wide confidence band is telling you.
 
 ---
 
 ## How the grade formula works
 
 ```
-distance = Euclidean distance in standardized feature space
-raw_grade = 100 * exp(-distance / 5.0)
-grade = raw_grade * coverage
+distance  = sqrt( mean( standardized_deviation_i^2 ) )   # over available features
+grade     = 100 * exp(-distance / 1.5)
 ```
 
-Standardization uses a StandardScaler fit on Kubiak's reference players, so
-distances are in units of "natural variation within Kubiak's actual rosters."
-A player who is one standard deviation away from the archetype on every feature
-grades roughly 82. A player two standard deviations away on every feature grades
-around 67. The exponential decay means the penalty accelerates as players get
-further from the archetype.
+Standardization uses a StandardScaler fit on the **league-wide** combine
+population at each position, so a distance of "1" means one league standard
+deviation -- a stable unit, not the spread of the two or three players Kubiak
+happened to coach. A player who sits one league std from the archetype grades
+about 51; two league std grades about 26; an exact match grades 100.
 
-The scale factor is 5.0. The handoffs originally used 2.0, but the 40/60
-archetype blend cannot be exactly matched by any real player -- the archetype
-is an average, not an individual. With scale 2.0, almost every player graded
-between 5 and 50, which compressed the rankings to noise. Scale 5.0 spreads
-grades meaningfully while still punishing large deviations.
+The scale factor is 1.5. Because distance is now a per-feature mean rather than a
+sum, the scale factor no longer has to absorb how many features a position uses,
+so the old hand-tuned 5.0 (and the 2.0 before it) are retired.
 
 Confidence intervals widen when features are missing and when the reference
 set has few players at a position. They are shown as context but the primary
@@ -150,14 +176,28 @@ unknown execution risk.
 
 ---
 
-## What free data cannot do
+## Offensive line: real PFF grades
 
-These limitations are not choices, they are gaps in what is publicly available:
+OL fit is the one place this project uses **paid** data. Individual blocking
+grades aren't in any free source, so the linemen are graded on PFF Premium's
+**pass-block grade, run-block grade, and pass-block efficiency**, exported by
+hand and matched by name. Two things to read carefully:
 
-- **Individual OL blocking grades**: require PFF's paid charting. This project
-  uses team-level rushing EPA and pressure rate for games the lineman participated
-  in -- a noisier proxy.
-- **Personnel groupings** (11/12/21 personnel rates): also paywalled. We know
+- The grade is a **meet-or-exceed** measure, not a "be exactly average like
+  Kubiak's line" measure. A lineman who blocks at least as well as Kubiak's
+  reference linemen scores at the top; only blocking *below* that level pulls the
+  grade down. (Blocking quality is universal -- being great isn't a "bad fit" --
+  so the usual reference-vs-control archetype test doesn't apply to OL the way it
+  does to skill positions.)
+- **Rookies have no NFL blocking grade**, so a rookie lineman is graded on
+  athletic measurables only and carries a wide confidence band. Read a high
+  rookie OL grade as an athletic projection, not demonstrated blocking.
+
+## What free data still cannot do
+
+These limitations are gaps in what is publicly available:
+
+- **Personnel groupings** (11/12/21 personnel rates): paywalled. We know
   Kubiak runs a lot of 12-personnel but cannot measure it.
 - **Route-level receiver data**: separation, route usage by type. Available in
   paid NextGen Stats tiers but not the free API.

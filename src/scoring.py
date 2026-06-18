@@ -11,46 +11,43 @@ from sklearn.preprocessing import StandardScaler
 DB_PATH = "data/raw/nfl.duckdb"
 
 try:
-    from archetype import PHYSICAL_FEATURES, PHYSICAL_POSITION_MAP
+    from archetype import (PFF_SKILL, PHYSICAL_FEATURES, PHYSICAL_POSITION_MAP,
+                           norm_name, norm_sql)
 except ImportError:
-    from src.archetype import PHYSICAL_FEATURES, PHYSICAL_POSITION_MAP
+    from src.archetype import (PFF_SKILL, PHYSICAL_FEATURES, PHYSICAL_POSITION_MAP,
+                               norm_name, norm_sql)
 
 # Years of NFL experience determine combine vs performance weighting
 # (years counted as completed seasons before 2026)
+# Rookies are scored on combine measurables only; veterans on NFL performance
+# only. Sophomores (one prior season) blend the two CONTINUOUSLY by how much
+# they actually played as a rookie: a sophomore with very few NFL snaps has a
+# noisy performance signal, so the blend leans on the more reliable combine
+# athleticism. The performance weight is snaps / (snaps + K): a 2-snap rookie
+# season contributes almost nothing, a near-full season (~700+) contributes ~0.7.
+# This replaces an earlier binary 40%-snap-share cutoff that trusted a 2-snap
+# sample exactly as much as a 350-snap one.
+SOPHOMORE_SNAP_K = 300
+
 WEIGHTING_RULES = {
-    "rookie":               {"combine": 1.00, "performance": 0.00},
-    "sophomore_high_snap":  {"combine": 0.30, "performance": 0.70},
-    "sophomore_low_snap":   {"combine": 0.70, "performance": 0.30},
-    "veteran":              {"combine": 0.00, "performance": 1.00},
+    "rookie":   {"combine": 1.00, "performance": 0.00},
+    "veteran":  {"combine": 0.00, "performance": 1.00},
 }
 
-SOPHOMORE_SNAP_THRESHOLD = 0.40
+# Every position's performance features come from PFF (see PFF_SKILL in
+# archetype.py). Skill positions are profile-matched (two-sided distance); OL is
+# a one-sided quality bar. Must match columns in kubiak_position_archetypes.
+POSITION_FEATURES = {g: cfg["features"] for g, cfg in PFF_SKILL.items()}
 
-# Feature lists per position. Must match columns in kubiak_position_archetypes.
-POSITION_FEATURES = {
-    "QB": [
-        "completion_pct", "epa_per_dropback", "sack_rate", "time_to_throw",
-        "completed_air_yards", "play_action_completion_pct",
-        "out_of_pocket_completion_pct", "rz_completion_pct", "rz_epa_per_dropback",
-    ],
-    "RB": [
-        "rush_yards_over_expected", "success_rate_outside_zone",
-        "shotgun_efficiency", "rb_target_share", "snap_share",
-        "rz_success_rate", "rz_target_share",
-    ],
-    "WR": [
-        "avg_separation", "yac_over_expected", "target_share",
-        "air_yards_share", "motion_catch_rate", "rz_target_share",
-    ],
-    "TE": [
-        "target_share", "air_yards_per_target", "yac_over_expected",
-        "snap_share", "rz_target_share",
-    ],
-    "OL": [
-        "rush_epa_guard", "rush_epa_tackle", "rush_epa_end",
-        "team_pressure_rate_allowed", "avg_snap_share",
-    ],
-}
+# Features that are one-directional quality scores (being BETTER than the
+# archetype is not a deviation). Only OL is configured this way.
+ONE_SIDED_HIGHER_BETTER = {g: set(cfg["features"]) for g, cfg in PFF_SKILL.items()
+                           if cfg.get("one_sided")}
+
+# Weight a rookie's college PFF grade gets in the blend (rest is athletic
+# combine). College PFF is a real full-season signal but a college-to-NFL
+# projection, so it is trusted heavily but not fully.
+COLLEGE_PERF_WEIGHT = 0.65
 
 # Combine table uses 'cone' (not 'three_cone'), 'ht' as "F-I" string, no hand_size/arm_length
 COMBINE_FEATURES_BY_POSITION = {
@@ -70,11 +67,16 @@ POSITION_GROUP_MAP = {
 }
 
 # Grade formula: grade = 100 * exp(-distance / SCALE_FACTOR)
-# SCALE_FACTOR=5.0: primary reference QB (Darnold, 60% weight) grades ~76;
-# a player 5 sd from archetype grades ~37. Raised from the handoff's 2.0
-# because the blended 40/60 archetype cannot be exactly matched by any real
-# player, so 2.0 compressed all grades into the 5-50 range.
-SCALE_FACTOR = 5.0
+# distance is now the ROOT-MEAN-SQUARE standardized deviation across the
+# features actually available for a player (see _compute_grade), so it is on
+# a per-feature scale (typically ~0.5-3.0 league std) and is invariant to how
+# many features are present. A player whose available traits sit 1 RMS-std
+# from the archetype grades ~51; 2 RMS-std grades ~26; on-archetype grades 100.
+# Because the metric is now a mean rather than a sum, SCALE_FACTOR no longer
+# has to absorb the dimensionality of the feature set, so the old hand-tuned
+# 5.0 (calibrated against summed distance) is replaced by a value derived from
+# the per-feature std scale.
+SCALE_FACTOR = 1.5
 
 # Base uncertainty for confidence interval width
 BASE_UNCERTAINTY = 0.15
@@ -87,6 +89,15 @@ OFFENSE_WEIGHTS = {
     "RB": 0.20,
     "TE": 0.10,
 }
+
+# Which model supplies each position's PRIMARY scheme-fit grade.
+# Every position's PRIMARY grade is now the PFF performance model: individual
+# PFF grades/profile metrics separate Kubiak's players from a control population
+# far better than the old combine measurables. Veterans are graded on their NFL
+# PFF, rookies on their college PFF, sophomores on a snap-weighted blend; the
+# combine/athletic model is retained only as a secondary view and a last-resort
+# fallback when a player has no PFF data at all.
+PRIMARY_MODEL = {g: "performance" for g in PFF_SKILL}
 
 # Regular season week ceiling
 REG_SEASON_MAX_WEEK = 18
@@ -147,14 +158,17 @@ def _recent_seasons(gsis_id: str, con) -> list[int]:
 # Phase A: Player classification and feature building
 # ---------------------------------------------------------------------------
 
-def classify_player(pfr_id: str | None) -> str:
-    """Return 'rookie', 'sophomore_high_snap', 'sophomore_low_snap', or 'veteran'.
+def classify_player(pfr_id: str | None) -> tuple[str, float]:
+    """Return (experience_label, performance_weight).
 
-    Classification based on snap_counts presence before 2026. Players with no
-    pfr_id (common for OL in nflreadpy data) default to 'rookie'.
+    performance_weight is the fraction of the grade driven by NFL performance
+    (the rest comes from combine). Rookies -> 0.0 (combine only); veterans ->
+    1.0 (performance only); sophomores -> snaps / (snaps + SOPHOMORE_SNAP_K),
+    so a sophomore's NFL signal is trusted in proportion to how much they played.
+    Players with no pfr_id (common for OL in nflreadpy data) default to rookie.
     """
     if pfr_id is None:
-        return "rookie"
+        return "rookie", 0.0
 
     con = duckdb.connect(DB_PATH)
     prior_seasons = con.execute(
@@ -164,23 +178,55 @@ def classify_player(pfr_id: str | None) -> str:
 
     if len(prior_seasons) == 0:
         con.close()
-        return "rookie"
+        return "rookie", 0.0
 
     if len(prior_seasons) == 1:
         rookie_year = prior_seasons[0]
-        snap_share = con.execute(
-            "SELECT AVG(offense_pct) FROM snap_counts WHERE pfr_player_id = ? AND season = ?",
+        snaps = con.execute(
+            "SELECT SUM(offense_snaps) FROM snap_counts WHERE pfr_player_id = ? AND season = ?",
             [pfr_id, rookie_year],
         ).fetchone()[0]
         con.close()
-        if snap_share is None:
-            raise RuntimeError(
-                f"Player {pfr_id} has 1 prior season but no snap_share. Investigate."
-            )
-        return "sophomore_high_snap" if snap_share >= SOPHOMORE_SNAP_THRESHOLD else "sophomore_low_snap"
+        snaps = float(snaps) if snaps is not None else 0.0
+        w_perf = snaps / (snaps + SOPHOMORE_SNAP_K)
+        label = f"sophomore ({int(snaps)} snaps)"
+        return label, w_perf
 
     con.close()
-    return "veteran"
+    return "veteran", 1.0
+
+
+def classify_pff(player_name: str, position_group: str, con) -> tuple[str, float]:
+    """Experience + performance weight for a player, derived from PFF data.
+
+    Read straight from the PFF report (names match the roster, unlike snap_counts
+    nicknames): a player with prior NFL PFF seasons is a veteran (>=2) or snap-
+    weighted sophomore (1); one with only a college PFF season is a rookie graded
+    on college; one with neither falls back to combine athleticism (weight 0).
+    """
+    cfg = PFF_SKILL[position_group]
+    nkey = norm_name(player_name)
+    nfl = con.execute(f"""
+        SELECT season, SUM({cfg['snap_col']}) AS snaps
+        FROM {cfg['report']}
+        WHERE {norm_sql("player")} = ? AND level = 'nfl' AND season < 2026
+        GROUP BY season
+    """, [nkey]).fetchdf()
+
+    if nfl.empty:
+        has_college = con.execute(
+            f"SELECT 1 FROM {cfg['report']} WHERE {norm_sql('player')} = ? "
+            f"AND level = 'college' LIMIT 1", [nkey],
+        ).fetchone()
+        if has_college:
+            return "rookie (college)", COLLEGE_PERF_WEIGHT
+        return "rookie", 0.0
+
+    if len(nfl) >= 2:
+        return "veteran", 1.0
+
+    snaps = float(nfl["snaps"].sum() or 0.0)
+    return f"sophomore ({int(snaps)} snaps)", snaps / (snaps + SOPHOMORE_SNAP_K)
 
 
 def get_combine_features(pfr_id: str, position_group: str) -> pd.Series:
@@ -471,85 +517,69 @@ def _te_performance(gsis_id: str, pfr_id: str | None, con, seasons: list[int] | 
     })
 
 
-def _ol_performance(gsis_id: str, pfr_id: str | None, player_name: str, con, seasons: list[int] | None = None) -> pd.Series:
-    """OL performance using team-level metrics from games the player participated in.
+_COLLEGE_OFFSET_CACHE: dict[str, dict] = {}
 
-    Individual OL blocking grades are not available in free data. These
-    team-level proxies are computed only for games the player was on the field,
-    which is the tightest available signal for individual contribution.
+
+def _college_offsets(position_group: str, con) -> dict:
+    """Per-feature (college league mean - NFL league mean) among regular players.
+    PFF grades are curved within league, so this is small; it re-centers college
+    metrics onto the NFL population before comparison to the (NFL) archetype."""
+    if position_group in _COLLEGE_OFFSET_CACHE:
+        return _COLLEGE_OFFSET_CACHE[position_group]
+    cfg = PFF_SKILL[position_group]
+    feats = cfg["features"]
+    sel = ", ".join(f"avg({f}) AS {f}" for f in feats)
+    nfl = con.execute(f"SELECT {sel} FROM {cfg['report']} WHERE level='nfl' AND {cfg['snap_col']} >= {cfg['min_snaps']}").fetchdf().iloc[0]
+    col = con.execute(f"SELECT {sel} FROM {cfg['report']} WHERE level='college' AND {cfg['snap_col']} >= {cfg['min_snaps']}").fetchdf().iloc[0]
+    offsets = {f: float(col[f]) - float(nfl[f]) for f in feats}
+    _COLLEGE_OFFSET_CACHE[position_group] = offsets
+    return offsets
+
+
+def _pff_performance(player_name: str, position_group: str, con,
+                     seasons: list[int] | None = None) -> pd.Series:
+    """A player's PFF performance vector for their group.
+
+    Uses the most recent NFL season's row if available; otherwise the final
+    college season, re-centered onto the NFL population. `seasons` pins the NFL
+    lookup to a reference player's season; None means most recent. Matched by
+    normalized name; ordered by snaps so a primary stint wins name collisions.
     """
+    cfg = PFF_SKILL[position_group]
+    feats = cfg["features"]
     if seasons is None:
-        seasons = [2024, 2025]
+        seasons = [2025, 2024]
 
-    # Resolve games via snap_counts (pfr_player_id or name)
-    if pfr_id:
-        games = con.execute("""
-            SELECT game_id, team, season FROM snap_counts
-            WHERE pfr_player_id = ? AND season IN (SELECT UNNEST(?))
-              AND position IN ('C','G','T') AND offense_snaps > 0
-        """, [pfr_id, seasons]).fetchdf()
-        snap_pct_row = con.execute("""
-            SELECT AVG(offense_pct) FROM snap_counts
-            WHERE pfr_player_id = ? AND season IN (SELECT UNNEST(?))
-              AND position IN ('C','G','T')
-        """, [pfr_id, seasons]).fetchone()
-    else:
-        games = con.execute("""
-            SELECT game_id, team, season FROM snap_counts
-            WHERE player = ? AND season IN (SELECT UNNEST(?))
-              AND position IN ('C','G','T') AND offense_snaps > 0
-        """, [player_name, seasons]).fetchdf()
-        snap_pct_row = con.execute("""
-            SELECT AVG(offense_pct) FROM snap_counts
-            WHERE player = ? AND season IN (SELECT UNNEST(?))
-              AND position IN ('C','G','T')
-        """, [player_name, seasons]).fetchone()
+    def _f(v):
+        return float(v) if v is not None and not (isinstance(v, float) and math.isnan(v)) else float("nan")
 
-    if games.empty:
-        # Last resort: use rosters to find prior team(s), compute full-season team stats
-        team_seasons = con.execute("""
-            SELECT DISTINCT team, season FROM rosters
-            WHERE player_id = ? AND season IN (SELECT UNNEST(?))
-        """, [gsis_id, seasons]).fetchdf()
-        if team_seasons.empty:
-            raise RuntimeError(
-                f"OL {gsis_id} ({player_name}): no snap data or roster history in 2024-2025"
-            )
-        # Use full-season team data (less precise but better than nothing)
-        cond = " OR ".join(
-            f"(posteam='{r.team}' AND season={r.season})"
-            for _, r in team_seasons.iterrows()
-        )
-        game_filter = f"({cond})"
-        snap_share = float("nan")
-    else:
-        game_ids = games["game_id"].tolist()
-        teams = games["team"].unique().tolist()
-        game_filter = f"game_id IN ({', '.join(repr(g) for g in game_ids)}) AND posteam IN ({', '.join(repr(t) for t in teams)})"
-        snap_share = float(snap_pct_row[0]) if snap_pct_row and snap_pct_row[0] is not None else float("nan")
+    nkey = norm_name(player_name)
+    sel = ", ".join(feats)
 
-    rush_epa = con.execute(f"""
-        SELECT run_gap, AVG(epa) AS avg_epa, COUNT(*) AS n
-        FROM pbp
-        WHERE {game_filter} AND play_type='run' AND run_gap IS NOT NULL AND week <= {REG_SEASON_MAX_WEEK}
-        GROUP BY run_gap
-    """).fetchdf()
+    rows = con.execute(f"""
+        SELECT {sel} FROM {cfg['report']}
+        WHERE {norm_sql("player")} = ? AND level = 'nfl' AND season IN (SELECT UNNEST(?))
+        ORDER BY season DESC, {cfg['snap_col']} DESC
+    """, [nkey, seasons]).fetchdf()
 
-    epa_by_gap = {row["run_gap"]: row["avg_epa"] for _, row in rush_epa.iterrows()}
+    if not rows.empty:
+        r = rows.iloc[0]
+        return pd.Series({f: _f(r[f]) for f in feats})
 
-    pressure = con.execute(f"""
-        SELECT SUM(CAST(was_pressure AS DOUBLE)) AS pressures,
-               COUNT(*) AS dropbacks
-        FROM pbp
-        WHERE {game_filter} AND qb_dropback = 1 AND week <= {REG_SEASON_MAX_WEEK}
-    """).fetchdf().iloc[0]
+    col = con.execute(f"""
+        SELECT {sel} FROM {cfg['report']}
+        WHERE {norm_sql("player")} = ? AND level = 'college'
+        ORDER BY {cfg['snap_col']} DESC
+    """, [nkey]).fetchdf()
 
+    if col.empty:
+        raise RuntimeError(f"{position_group} {player_name}: no NFL or college PFF row")
+
+    offsets = _college_offsets(position_group, con)
+    r = col.iloc[0]
     return pd.Series({
-        "rush_epa_guard":             epa_by_gap.get("guard", float("nan")),
-        "rush_epa_tackle":            epa_by_gap.get("tackle", float("nan")),
-        "rush_epa_end":               epa_by_gap.get("end", float("nan")),
-        "team_pressure_rate_allowed": _safe_div(pressure["pressures"], pressure["dropbacks"]),
-        "avg_snap_share":             snap_share,
+        f: (_f(r[f]) - offsets[f]) if not math.isnan(_f(r[f])) else float("nan")
+        for f in feats
     })
 
 
@@ -561,23 +591,12 @@ def get_performance_features(gsis_id: str | None, position_group: str, pfr_id: s
     plays in that situation. Raises RuntimeError when the player has no
     usable data at all for this position group.
     """
-    if position_group != "OL" and gsis_id is None:
-        raise RuntimeError(f"gsis_id required for {position_group} performance features")
+    if position_group not in PFF_SKILL:
+        raise RuntimeError(f"Unknown position_group: {position_group}")
 
     con = duckdb.connect(DB_PATH)
     try:
-        if position_group == "QB":
-            result = _qb_performance(gsis_id, con, seasons)
-        elif position_group == "RB":
-            result = _rb_performance(gsis_id, pfr_id, con, seasons)
-        elif position_group == "WR":
-            result = _wr_performance(gsis_id, con, seasons)
-        elif position_group == "TE":
-            result = _te_performance(gsis_id, pfr_id, con, seasons)
-        elif position_group == "OL":
-            result = _ol_performance(gsis_id, pfr_id, player_name, con, seasons)
-        else:
-            raise RuntimeError(f"Unknown position_group: {position_group}")
+        result = _pff_performance(player_name, position_group, con, seasons)
     finally:
         con.close()
 
@@ -617,51 +636,32 @@ def build_position_scaler(position_group: str) -> tuple[pd.Series, StandardScale
     ).fetchdf()
     con.close()
 
-    perf_matrix = []
     comb_matrix = []
-    comb_archetype_rows = []
 
     for _, rp in ref_players.iterrows():
-        gsis_id = None if pd.isna(rp["gsis_id"]) else rp["gsis_id"]
         pfr_id = rp["player_id"]  # this is pfr_player_id from snap_counts
-        player_name = rp["player"]
-
-        # OL reference players have NULL gsis_id (OL pfr_id not in nflreadpy rosters).
-        # They can still be scored via pfr_id in snap_counts.
-        if gsis_id is None and not pfr_id:
-            continue
-
-        # Use only the player's reference season for the scaler
-        # (avoids mixing pre-Kubiak seasons into the reference distribution)
-        _ref_map = {"NO": 2024, "SEA": 2025}
-        ref_season = [_ref_map[rp["team"]]] if rp["team"] in _ref_map else None
-
-        # Performance features
-        try:
-            pf = get_performance_features(gsis_id, position_group, pfr_id, player_name, ref_season)
-            row = [pf.get(f, float("nan")) for f in perf_features]
-            if not all(math.isnan(v) for v in row):
-                perf_matrix.append(row)
-        except RuntimeError:
-            pass
-
-        # Combine features
+        # Combine features (for the secondary athletic model / rookie fallback)
         if pfr_id:
             try:
                 cf = get_combine_features(pfr_id, position_group)
                 row = [cf.get(f, float("nan")) for f in comb_features]
                 if not all(math.isnan(v) for v in row):
                     comb_matrix.append(row)
-                    comb_archetype_rows.append(row)
             except RuntimeError:
                 pass
 
-    if not perf_matrix:
-        raise RuntimeError(f"No performance data for any reference player in {position_group}")
-
-    perf_df = pd.DataFrame(perf_matrix, columns=perf_features).dropna(axis=1, how="all")
+    # Fit the performance scaler on the LEAGUE-WIDE PFF population (regular
+    # players, >= min_snaps) so a standard deviation is a stable league unit.
+    cfg = PFF_SKILL[position_group]
+    with duckdb.connect(DB_PATH) as _c:
+        league = _c.execute(
+            f"SELECT {', '.join(perf_features)} FROM {cfg['report']} "
+            f"WHERE level = 'nfl' AND {cfg['snap_col']} >= {cfg['min_snaps']}"
+        ).fetchdf()
+    league = league[perf_features].apply(pd.to_numeric, errors="coerce").dropna(how="all")
     perf_scaler = StandardScaler()
-    perf_scaler.fit(perf_df.fillna(perf_df.mean()))
+    perf_scaler.fit(league.fillna(league.mean()).values)
+    perf_scaler.feature_names_in_ = np.array(perf_features)
 
     # Combine scaler and archetype (mean of reference player measurables)
     if comb_matrix:
@@ -682,11 +682,18 @@ def _positions_for_group(group: str) -> list[str]:
 
 
 def _compute_grade(player_vec: pd.Series, archetype_vec: pd.Series, scaler: StandardScaler,
-                   features: list[str]) -> tuple[float, dict, list[str], list[str]]:
+                   features: list[str],
+                   one_sided_higher_better: set | None = None) -> tuple[float, dict, list[str], list[str]]:
     """Compute grade, per-feature contributions, features used, and features missing.
+
+    Features named in `one_sided_higher_better` are treated as one-directional
+    quality scores: a player who is ABOVE the archetype on them contributes zero
+    distance (being better than Kubiak's reference is a perfect fit, not a
+    deviation), while being below still counts. Used for PFF OL grades.
 
     Returns: (grade, feature_contributions, features_used, features_missing)
     """
+    one_sided_higher_better = one_sided_higher_better or set()
     scaler_features = list(scaler.feature_names_in_) if hasattr(scaler, "feature_names_in_") else features
 
     features_used = []
@@ -716,16 +723,57 @@ def _compute_grade(player_vec: pd.Series, archetype_vec: pd.Series, scaler: Stan
         p_std = (float(p_val) - mean) / std
         a_std = (float(a_val) - mean) / std
         diff = p_std - a_std
+        # One-sided quality feature: exceeding the archetype is not a deviation.
+        if feat in one_sided_higher_better and diff > 0:
+            diff = 0.0
         sq_dists.append(diff ** 2)
         contributions[feat] = diff
         features_used.append(feat)
 
     if not sq_dists:
-        return 0.0, {}, [], features
+        # No usable features -> the grade is undefined, not zero. Returning NaN
+        # lets callers exclude the player from aggregates instead of dragging the
+        # unit toward 0 (a missing measurement is not a poor fit).
+        return float("nan"), {}, [], features
 
-    distance = math.sqrt(sum(sq_dists))
+    # Root-mean-square standardized deviation. Using the MEAN (not the sum) of
+    # squared deviations makes the point estimate invariant to the number of
+    # available features: a player scored on 2 traits and one scored on 7 sit on
+    # the same scale. Missing features therefore no longer bias the grade down;
+    # they only widen the confidence interval (see score_player).
+    distance = math.sqrt(sum(sq_dists) / len(sq_dists))
     grade = min(100.0, 100.0 * math.exp(-distance / SCALE_FACTOR))
     return grade, contributions, features_used, features_missing
+
+
+def _blend(perf_grade: float, comb_grade: float,
+           w_perf: float, w_comb: float) -> float:
+    """Weighted blend of two component grades, NaN-safe.
+
+    If one component is NaN (e.g. a sophomore with no combine record), the blend
+    renormalizes onto the component that does exist rather than propagating NaN
+    or treating the missing component as a zero.
+    """
+    parts = []
+    if w_perf > 0 and not (perf_grade is None or math.isnan(perf_grade)):
+        parts.append((perf_grade, w_perf))
+    if w_comb > 0 and not (comb_grade is None or math.isnan(comb_grade)):
+        parts.append((comb_grade, w_comb))
+    if not parts:
+        return float("nan")
+    total_w = sum(w for _, w in parts)
+    return sum(g * w for g, w in parts) / total_w
+
+
+def _roster_ht_wt(player_id: str, con) -> tuple[float, float]:
+    """Return (height, weight) averaged over a player's roster rows, NaN if absent."""
+    row = con.execute(
+        "SELECT AVG(height), AVG(weight) FROM rosters WHERE player_id = ?",
+        [player_id],
+    ).fetchone()
+    ht = float(row[0]) if row and row[0] is not None else float("nan")
+    wt = float(row[1]) if row and row[1] is not None else float("nan")
+    return ht, wt
 
 
 def score_player(gsis_id: str, position_group: str | None = None) -> dict:
@@ -776,8 +824,12 @@ def score_player(gsis_id: str, position_group: str | None = None) -> dict:
     if position_group not in POSITION_FEATURES:
         raise RuntimeError(f"Player {gsis_id} ({player_name}) position_group '{position_group}' not in POSITION_FEATURES")
 
-    experience = classify_player(pfr_id)
-    weights = WEIGHTING_RULES[experience]
+    # Experience + performance weight come from the PFF data (reliable names):
+    # veteran -> NFL PFF, rookie -> college PFF, sophomore -> snap-weighted blend.
+    with duckdb.connect(DB_PATH) as _c:
+        experience, w_perf = classify_pff(player_name, position_group, _c)
+
+    weights = {"performance": w_perf, "combine": 1.0 - w_perf}
 
     perf_arch, perf_scaler, comb_arch, comb_scaler = build_position_scaler(position_group)
 
@@ -803,10 +855,11 @@ def score_player(gsis_id: str, position_group: str | None = None) -> dict:
             pf = pd.Series({f: float("nan") for f in perf_features})
 
         perf_grade, perf_contrib, p_used, p_missing = _compute_grade(
-            pf, perf_arch, perf_scaler, perf_features
+            pf, perf_arch, perf_scaler, perf_features,
+            one_sided_higher_better=ONE_SIDED_HIGHER_BETTER.get(position_group),
         )
     else:
-        perf_grade, perf_contrib, p_used, p_missing = 0.0, {}, [], perf_features
+        perf_grade, perf_contrib, p_used, p_missing = float("nan"), {}, [], perf_features
 
     if weights["combine"] > 0:
         try:
@@ -814,15 +867,28 @@ def score_player(gsis_id: str, position_group: str | None = None) -> dict:
         except RuntimeError:
             cf = pd.Series({f: float("nan") for f in comb_features})
 
+        # Height/weight always exist in rosters; fall back to them so a player
+        # who simply never attended the combine (common for rookie UDFAs) is
+        # still scored on ht/wt instead of collapsing to an all-missing 0.
+        if "ht" in comb_features or "wt" in comb_features:
+            if (cf.get("ht") is None or math.isnan(float(cf.get("ht", float("nan"))))) or \
+               (cf.get("wt") is None or math.isnan(float(cf.get("wt", float("nan"))))):
+                with duckdb.connect(DB_PATH) as _c:
+                    r_ht, r_wt = _roster_ht_wt(gsis_id, _c)
+                if "ht" in comb_features and (cf.get("ht") is None or math.isnan(float(cf.get("ht", float("nan"))))):
+                    cf["ht"] = r_ht
+                if "wt" in comb_features and (cf.get("wt") is None or math.isnan(float(cf.get("wt", float("nan"))))):
+                    cf["wt"] = r_wt
+
         comb_grade, comb_contrib, c_used, c_missing = _compute_grade(
             cf, comb_arch, comb_scaler, comb_features
         )
     else:
-        comb_grade, comb_contrib, c_used, c_missing = 0.0, {}, [], comb_features
+        comb_grade, comb_contrib, c_used, c_missing = float("nan"), {}, [], comb_features
 
-    # Blend grades
+    # Blend grades (NaN-safe: a missing component renormalizes onto the other).
     if weights["performance"] > 0 and weights["combine"] > 0:
-        grade = weights["performance"] * perf_grade + weights["combine"] * comb_grade
+        grade = _blend(perf_grade, comb_grade, weights["performance"], weights["combine"])
         contributions = {**{f: v * weights["performance"] for f, v in perf_contrib.items()},
                          **{f: v * weights["combine"] for f, v in comb_contrib.items()}}
         features_used = p_used + c_used
@@ -832,12 +898,13 @@ def score_player(gsis_id: str, position_group: str | None = None) -> dict:
     else:
         grade, contributions, features_used, features_missing = comb_grade, comb_contrib, c_used, c_missing
 
-    # Coverage penalty: penalize grades computed on partial feature sets
+    # Coverage is reported as a data-completeness diagnostic and feeds the
+    # confidence interval, but it is NOT multiplied into the grade: missing a
+    # measurement should widen uncertainty, not lower the fit estimate.
     _n_used = len(features_used)
     _n_total = _n_used + len(features_missing)
     coverage = _n_used / _n_total if _n_total > 0 else 0.0
     raw_grade = grade
-    grade = raw_grade * coverage
 
     # Confidence interval
     total_features = len(perf_features) if weights["performance"] > 0 else len(comb_features)
@@ -857,6 +924,7 @@ def score_player(gsis_id: str, position_group: str | None = None) -> dict:
         "feature_contributions": {k: round(v, 4) for k, v in contributions.items()},
         "features_used":        features_used,
         "features_missing":     features_missing,
+        "model":                "performance",
     }
 
 
@@ -892,10 +960,14 @@ def score_raiders_player(gsis_id: str) -> dict:
 def score_position_group(group: str, players_df: pd.DataFrame) -> dict:
     """Score all Raiders players in a position group.
 
-    Starter is identified by depth_chart_position order (v1 limitation:
-    no 2026 snap data available pre-season, so depth chart is the proxy).
-    Unit grade is snap-share-weighted across the rotation, but since 2026
-    snap shares don't exist yet, we weight equally among scored players.
+    Free data has no 2026 depth chart or snap share, so we do NOT fabricate a
+    single "starter" from an arbitrary ordering (the previous version sorted by
+    player name alphabetically). Instead we report two honest numbers:
+      - top_grade: the best fit available at the position (the ceiling)
+      - unit_grade: the mean over players whose grade is actually defined.
+    Players whose grade is undefined (NaN: no usable features for this model)
+    are excluded from the mean rather than counted as zero, so depth bodies with
+    no data don't drag the unit down.
     """
     scored = []
     for _, row in players_df.iterrows():
@@ -907,22 +979,24 @@ def score_position_group(group: str, players_df: pd.DataFrame) -> dict:
             # Surface as warning; don't block the group grade
             print(f"  WARNING: could not score {row['player_name']} ({group}): {exc}")
 
-    if not scored:
+    defined = [r for r in scored if not math.isnan(r["grade"])]
+
+    if not defined:
         return {
             "position_group": group,
-            "players": [],
-            "starter_grade": float("nan"),
+            "players": scored,
+            "top_grade": float("nan"),
             "unit_grade": float("nan"),
         }
 
-    scored.sort(key=lambda r: r.get("depth_order", 99))
-    starter_grade = scored[0]["grade"]
-    unit_grade = sum(r["grade"] for r in scored) / len(scored)
+    scored.sort(key=lambda r: (math.isnan(r["grade"]), -r["grade"] if not math.isnan(r["grade"]) else 0))
+    top_grade = max(r["grade"] for r in defined)
+    unit_grade = sum(r["grade"] for r in defined) / len(defined)
 
     return {
         "position_group": group,
         "players":        scored,
-        "starter_grade":  round(starter_grade, 2),
+        "top_grade":      round(top_grade, 2),
         "unit_grade":     round(unit_grade, 2),
     }
 
@@ -1024,11 +1098,33 @@ def get_physical_features(player_id: str, position_group: str,
                       for f in features})
 
 
+# Combine position labels that map into each physical position group.
+# Used to fit the scaler on a league-wide population rather than the tiny
+# Kubiak reference set (n=2-3), so a "standard deviation" is a stable league
+# unit instead of the spread of two players.
+COMBINE_POS_FOR_GROUP = {
+    "QB": ["QB"],
+    "RB": ["RB", "FB"],
+    "WR": ["WR"],
+    "TE": ["TE"],
+    "OL": ["OT", "OG", "C", "G", "OL", "T"],
+}
+
+
 def build_physical_scaler(position_group: str) -> tuple[pd.Series, StandardScaler]:
     """Return the physical archetype mean vector and a fitted StandardScaler.
 
-    Scaler is fit on reference players' physical features for the group.
-    Only players with complete records for all group features are used.
+    The scaler is fit on the LEAGUE-WIDE combine population for the position
+    group (every player at those positions across all combine years in the DB),
+    not on the handful of Kubiak reference players. This makes each feature's
+    standard deviation a stable, league-representative unit: a distance of "1"
+    means one league std, regardless of how few reference players Kubiak had.
+    It also removes the old n>=3 fragility and the need to hand-tune SCALE_FACTOR
+    against a 2-player spread.
+
+    Players with partial combine records still contribute: missing cells are
+    imputed with the column (league) mean before fitting, so the std reflects
+    the players who actually have each measurement.
     """
     con = duckdb.connect(DB_PATH)
 
@@ -1041,49 +1137,39 @@ def build_physical_scaler(position_group: str) -> tuple[pd.Series, StandardScale
         raise RuntimeError(f"No physical archetype found for position_group={position_group}")
     arch_row = arch_row.iloc[0]
 
-    positions_in_group = [p for p, g in PHYSICAL_POSITION_MAP.items() if g == position_group]
-    ref_players = con.execute(
-        "SELECT player_id, gsis_id, player FROM kubiak_reference_players WHERE position IN (SELECT UNNEST(?))",
-        [positions_in_group],
-    ).fetchdf()
+    features = PHYSICAL_FEATURES[position_group]
+    combine_positions = COMBINE_POS_FOR_GROUP[position_group]
 
-    con.register("ref_df", ref_players)
-    physical = con.execute("""
-        SELECT
-            m.player_id,
-            AVG(r.height)     AS ht,
-            AVG(r.weight)     AS wt,
-            MAX(c.forty)      AS forty,
-            MAX(c.shuttle)    AS shuttle,
-            MAX(c.cone)       AS cone,
-            MAX(c.vertical)   AS vertical,
-            MAX(c.broad_jump) AS broad_jump
-        FROM ref_df m
-        LEFT JOIN rosters r ON (
-            (m.gsis_id IS NOT NULL AND r.player_id = m.gsis_id)
-            OR (m.gsis_id IS NULL AND r.player_name = m.player)
-        )
-        LEFT JOIN combine c ON c.pfr_id = m.player_id
-        GROUP BY m.player_id
-    """).fetchdf()
+    league = con.execute("""
+        SELECT ht, wt, forty, shuttle, cone, vertical, broad_jump
+        FROM combine
+        WHERE pos IN (SELECT UNNEST(?))
+    """, [combine_positions]).fetchdf()
     con.close()
 
-    features = PHYSICAL_FEATURES[position_group]
-    feature_matrix = []
-    for _, row in physical.iterrows():
-        vals = [row.get(f) for f in features]
-        if any(v is None or (isinstance(v, float) and math.isnan(v)) for v in vals):
-            continue
-        feature_matrix.append([float(v) for v in vals])
+    if league.empty:
+        raise RuntimeError(f"No league combine population for {position_group}")
 
-    if len(feature_matrix) < 3:
+    # Convert 'F-I' height strings to inches.
+    league["ht"] = league["ht"].apply(
+        lambda v: _height_to_inches(v) if isinstance(v, str) and "-" in v else float("nan")
+    )
+
+    matrix = league[features].apply(pd.to_numeric, errors="coerce")
+    # Keep rows with at least one present feature; impute the rest with the
+    # league mean so partial-combine players still inform the variance.
+    matrix = matrix.dropna(how="all")
+    means = matrix.mean()
+    matrix = matrix.fillna(means)
+
+    if len(matrix) < 10:
         raise RuntimeError(
-            f"Only {len(feature_matrix)} complete physical records for {position_group}. "
-            f"Need at least 3 to fit a scaler."
+            f"Only {len(matrix)} league combine records for {position_group}; "
+            f"expected a large population. Check combine ingestion."
         )
 
     scaler = StandardScaler()
-    scaler.fit(feature_matrix)
+    scaler.fit(matrix.values)
 
     archetype_vec = pd.Series({f: arch_row[f] for f in features})
     return archetype_vec, scaler
@@ -1140,12 +1226,13 @@ def score_player_physical(player_id: str, position_group: str | None = None) -> 
         pf, archetype_vec, scaler, features
     )
 
-    # Coverage penalty: penalize grades computed on partial feature sets
+    # Coverage is a reported data-completeness diagnostic feeding the confidence
+    # interval; it is NOT multiplied into the grade (a missing combine number
+    # widens uncertainty, it does not make a player a worse physical fit).
     _n_used = len(features_used)
     _n_total = _n_used + len(features_missing)
     coverage = _n_used / _n_total if _n_total > 0 else 0.0
     raw_grade = grade
-    grade = raw_grade * coverage
 
     total_features = len(features)
     n_missing = len(features_missing)
@@ -1213,28 +1300,35 @@ def score_offense_physical() -> dict:
         if group_players.empty:
             continue
 
+        # This is now the SECONDARY athletic/combine view (the primary scheme-fit
+        # grade is the PFF performance model in score_offense). Always the
+        # physical/trait scorer.
+        scorer = score_raiders_player_physical
+
         scored = []
         for _, row in group_players.iterrows():
             try:
-                result = score_raiders_player_physical(row["player_id"])
+                result = scorer(row["player_id"])
+                result["primary_model"] = "athletic"
                 result["depth_order"] = row.get("depth_order", 99)
                 scored.append(result)
             except RuntimeError as exc:
-                print(f"  WARNING: could not score {row['player_name']} ({group}) physical: {exc}")
+                print(f"  WARNING: could not score {row['player_name']} ({group}) [athletic]: {exc}")
 
-        if not scored:
+        defined = [r for r in scored if not math.isnan(r["grade"])]
+        if not defined:
             groups[group] = {
-                "position_group": group, "players": [],
-                "starter_grade": float("nan"), "unit_grade": float("nan"),
+                "position_group": group, "players": scored,
+                "top_grade": float("nan"), "unit_grade": float("nan"),
             }
             continue
 
-        scored.sort(key=lambda r: r.get("depth_order", 99))
+        scored.sort(key=lambda r: (math.isnan(r["grade"]), -r["grade"] if not math.isnan(r["grade"]) else 0))
         groups[group] = {
             "position_group": group,
             "players":        scored,
-            "starter_grade":  round(scored[0]["grade"], 2),
-            "unit_grade":     round(sum(r["grade"] for r in scored) / len(scored), 2),
+            "top_grade":      round(max(r["grade"] for r in defined), 2),
+            "unit_grade":     round(sum(r["grade"] for r in defined) / len(defined), 2),
         }
 
     total_weight = 0.0
@@ -1288,7 +1382,7 @@ def write_grades() -> None:
         group_rows.append({
             "position_group": group,
             "n_players":      len(grp_result.get("players", [])),
-            "starter_grade":  grp_result.get("starter_grade", float("nan")),
+            "top_grade":      grp_result.get("top_grade", float("nan")),
             "unit_grade":     grp_result.get("unit_grade", float("nan")),
         })
 
@@ -1309,6 +1403,7 @@ def write_grades() -> None:
                 "player_id":             p["player_id"],
                 "player_name":           p["player_name"],
                 "position_group":        p["position_group"],
+                "primary_model":         p.get("primary_model", "physical"),
                 "grade":                 p["grade"],
                 "raw_grade":             p["raw_grade"],
                 "coverage":              p["coverage"],

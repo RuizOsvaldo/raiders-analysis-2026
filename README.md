@@ -79,17 +79,35 @@ The app opens at http://localhost:8501 with four pages:
 
 ## Notes on data sources
 
-All NFL data is sourced from the open-source `nfl_data_py` package. Offensive line grades use proxy metrics (snap counts, position, roster data) rather than paid PFF data in v1.
+Most NFL data is sourced from the open-source `nfl_data_py` package. Offensive
+line blocking grades are the exception: they come from **PFF Premium** (pass-block
+grade, run-block grade, pass-block efficiency), manually exported per season to
+`data/raw/pff_blocking_<season>.csv` (gitignored, proprietary) and ingested by
+`ingest_pff_blocking`. Joined to players by name + team + season.
 
 Data is sourced from the open-source nfl_data_py package, which reads from the nflverse data repositories. Note that nfl_data_py is officially deprecated in favor of nflreadpy, with no further maintenance planned. It is retained here because it works correctly against the project's pinned dependencies and because the historical 2024 and 2025 season data being pulled is static. If in-season 2026 data pulls break in the future, the migration path is nflreadpy, which returns Polars DataFrames and would require a conversion layer to pandas.
 
 ## Archetype methodology
 
-The Kubiak scheme profile and position archetypes are built from two reference
-seasons: the 2024 New Orleans Saints (Kubiak's first OC year, weighted 40%) and
-the 2025 Seattle Seahawks (Kubiak's most recent OC year, weighted 60%). The
-Seahawks season is weighted higher because it is more recent and reflects the
-offense Kubiak built with greater autonomy.
+The Kubiak position archetypes are built from three reference seasons of Klint
+Kubiak as offensive coordinator, recency-weighted: the 2021 Minnesota Vikings
+(his first OC year, weighted 15%), the 2024 New Orleans Saints (35%), and the
+2025 Seattle Seahawks (50%). More recent seasons are weighted higher because
+they reflect the offense Kubiak built with greater autonomy. The reference
+team-seasons live in a single `REFERENCE` config in `src/archetype.py`; adding
+another season is a one-line change.
+
+FTN play-level charting (used for play-action, motion, RPO and out-of-pocket
+features) only exists in nflverse from 2022 on, so the 2021 Vikings players
+contribute to the physical and non-FTN performance features but abstain from the
+FTN-derived ones, and the scheme-tendency profile is built from the 2024/2025
+seasons only.
+
+Methodology note: role-splitting (separate slot/perimeter WR archetypes, or
+nearest-reference scoring instead of a single centroid) was tested against the
+validation harness and degraded separation, because too few reference players
+have complete records to define stable sub-archetypes. The single snap-weighted
+centroid with a league-wide scaler is retained as the best-supported method.
 
 Players contribute to the archetype if they recorded at least 20% offensive
 snap share in at least 4 games of the reference season. Their contribution is
@@ -100,11 +118,12 @@ Red zone is defined as yardline_100 <= 20. Several features are split between
 red-zone and non-red-zone contexts because a coach's tendencies often change
 when the field shrinks.
 
-Offensive line features use team-level proxies (adjusted line yards by gap and
-team pressure rate allowed) rather than individual snap-by-snap grades. The
-individual OL data exists in paid services like PFF but is not available
-free. This is a known v1 limitation; OL grades will be noisier than skill
-position grades.
+Offensive line features are individual PFF blocking grades (pass-block,
+run-block, pass-block efficiency). Because these are pure quality scores rather
+than scheme-specific traits, the OL grade is computed one-sided: a lineman who
+blocks at or above the level of Kubiak's reference linemen scores at the top,
+and only shortfalls below that level lower the grade. Rookies have no NFL
+blocking grade and fall back to athletic measurables (wide confidence band).
 
 ## Scoring methodology
 

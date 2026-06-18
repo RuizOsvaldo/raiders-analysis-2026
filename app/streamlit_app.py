@@ -37,14 +37,14 @@ stat_sum = summary["statistical"]
 # Top-level metrics
 m1, m2, m3 = st.columns(3)
 with m1:
-    st.metric("Physical Fit (overall)", f"{phys_sum['overall_grade'].iloc[0]:.1f} / 100")
-    st.caption("Primary grade. Trait-based, coverage-penalized.")
+    st.metric("Scheme Fit (overall)", f"{stat_sum['overall_grade'].iloc[0]:.1f} / 100")
+    st.caption("Primary grade. Individual PFF grades + profile vs Kubiak's archetype.")
 with m2:
-    st.metric("Statistical Similarity (overall)", f"{stat_sum['overall_grade'].iloc[0]:.1f} / 100")
-    st.caption("Secondary. Performance vs Kubiak reference players.")
+    st.metric("Athletic Profile (overall)", f"{phys_sum['overall_grade'].iloc[0]:.1f} / 100")
+    st.caption("Secondary. Combine measurables vs Kubiak's reference athletes.")
 with m3:
-    st.metric("Reference seasons", "Saints 2024 + Seahawks 2025")
-    st.caption("Weighted 40 / 60. 46 reference players.")
+    st.metric("Reference seasons", "MIN 2021 + NO 2024 + SEA 2025")
+    st.caption("Recency-weighted 15 / 35 / 50. 65 reference players.")
 
 st.markdown("---")
 
@@ -67,20 +67,20 @@ with chart_left:
 
     radar = go.Figure()
     radar.add_trace(go.Scatterpolar(
-        r=phys_vals + [phys_vals[0]],
-        theta=groups + [groups[0]],
-        fill="toself",
-        name="Physical Fit",
-        fillcolor="rgba(165,172,175,0.35)",
-        line=dict(color="#A5ACAF", width=2),
-    ))
-    radar.add_trace(go.Scatterpolar(
         r=stat_vals + [stat_vals[0]],
         theta=groups + [groups[0]],
         fill="toself",
-        name="Statistical",
-        fillcolor="rgba(0,0,0,0.15)",
-        line=dict(color="#333333", width=2, dash="dot"),
+        name="Scheme Fit",
+        fillcolor="rgba(0,0,0,0.20)",
+        line=dict(color="#000000", width=2),
+    ))
+    radar.add_trace(go.Scatterpolar(
+        r=phys_vals + [phys_vals[0]],
+        theta=groups + [groups[0]],
+        fill="toself",
+        name="Athletic",
+        fillcolor="rgba(165,172,175,0.30)",
+        line=dict(color="#A5ACAF", width=2, dash="dot"),
     ))
     radar.update_layout(
         polar=dict(
@@ -96,13 +96,13 @@ with chart_left:
     st.plotly_chart(radar, use_container_width=True)
 
 with chart_right:
-    st.subheader("Physical vs Statistical by group")
+    st.subheader("Scheme Fit vs Athletic by group")
     st.caption("Bars show unit-grade for each position group.")
 
     bar_df = pd.DataFrame({
         "Position": groups * 2,
-        "Grade":    phys_vals + stat_vals,
-        "Model":    ["Physical Fit"] * 5 + ["Statistical"] * 5,
+        "Grade":    stat_vals + phys_vals,
+        "Model":    ["Scheme Fit"] * 5 + ["Athletic"] * 5,
     })
     bar_fig = px.bar(
         bar_df,
@@ -110,7 +110,7 @@ with chart_right:
         y="Grade",
         color="Model",
         barmode="group",
-        color_discrete_map={"Physical Fit": "#A5ACAF", "Statistical": "#333333"},
+        color_discrete_map={"Scheme Fit": "#000000", "Athletic": "#A5ACAF"},
         range_y=[0, 100],
     )
     bar_fig.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.4)
@@ -162,14 +162,14 @@ display_df = filtered[[
 ]].copy()
 display_df.columns = [
     "Player", "Pos", "Group",
-    "Physical", "Phys Coverage",
-    "Statistical", "Stat Coverage",
+    "Scheme Fit", "Fit Coverage",
+    "Athletic", "Ath Coverage",
     "Scheme Exp", "NFL Exp",
 ]
-display_df["Physical"]    = display_df["Physical"].round(1)
-display_df["Statistical"] = display_df["Statistical"].round(1)
-display_df["Phys Coverage"] = display_df["Phys Coverage"].apply(coverage_label)
-display_df["Stat Coverage"] = display_df["Stat Coverage"].apply(coverage_label)
+display_df["Scheme Fit"] = display_df["Scheme Fit"].round(1)
+display_df["Athletic"]   = display_df["Athletic"].round(1)
+display_df["Fit Coverage"] = display_df["Fit Coverage"].apply(coverage_label)
+display_df["Ath Coverage"] = display_df["Ath Coverage"].apply(coverage_label)
 
 st.dataframe(display_df, use_container_width=True, hide_index=True)
 
