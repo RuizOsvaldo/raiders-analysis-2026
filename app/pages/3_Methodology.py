@@ -29,10 +29,22 @@ See the About page for the full reasoning.
 Trait-based. Compares a player's height, weight, and combine measurables
 (forty, shuttle, three-cone, vertical, broad jump) against the snap-weighted
 mean of those same metrics across Kubiak's reference players at the position.
-Distance to the archetype is converted to a 0-100 grade using
-`100 * exp(-distance / scale)`, then multiplied by the fraction of features
-the player has data for. A player with only height and weight on file gets
-penalized to roughly 40% of their raw grade.
+Each feature is standardized against the **league-wide** spread at that
+position, so a distance of "1" means one league standard deviation -- a stable
+unit, not the spread of the handful of players Kubiak happened to coach. The
+grade is the root-mean-square of those standardized deviations over the
+features the player actually has, converted with:
+
+```
+distance = sqrt( mean( standardized_deviation_i^2 ) )   # over available features
+grade    = 100 * exp(-distance / 1.5)
+```
+
+A player one league std from the archetype grades about 51; two std grades
+about 26; an exact match grades 100. Because the distance is a per-feature
+*mean* rather than a sum, the scale factor (1.5) no longer has to absorb how
+many features a position uses, and missing measurements no longer bias the
+grade up or down -- see "Missing data and coverage" below.
 
 This grade is scheme-agnostic. It does not care what offense the player has
 run before. It only asks: do they have the physical and athletic traits
@@ -94,7 +106,7 @@ nfl_data_py and nflreadpy:
 - Roughly 9% of plays did not match between PBP and FTN charting and were excluded
 - 24% of reference players have no combine record; these contribute only height and weight
 - Combine coverage is weakest for offensive linemen
-- Reference set is only 2 seasons; archetypes are noisier than with 4-5 years of data
+- Reference set is 3 seasons (2021, 2024, 2025); archetypes are noisier than with 4-5 years of data
 
 ## Kubiak's actual play-calling tendencies
 """)
@@ -124,5 +136,8 @@ st.caption(
     "(e.g., 13% / 57% = ~23% of dropbacks outside the red zone). "
     "Motion rate reflects FTN charting of any pre-snap motion; Shanahan-tree offenses "
     "routinely exceed 50%. "
-    "Source: weighted Saints 2024 (40%) + Seahawks 2025 (60%), regular season only."
+    "Source: Saints 2024 and Seahawks 2025 play-by-play, recency-weighted "
+    "(35% and 50%, renormalized to ~41/59 between them). The 2021 Vikings are "
+    "excluded from this table because FTN charting only starts in 2022. "
+    "Regular season only."
 )
