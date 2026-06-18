@@ -9,17 +9,18 @@ import streamlit as st
 
 from utils import load_scheme_profile
 
-st.set_page_config(page_title="Methodology", layout="wide")
 st.title("Methodology")
 
 st.markdown("""
 ## What this project measures
 
 This app grades the 2026 Las Vegas Raiders offensive roster against Klint
-Kubiak's scheme tendencies from his two most recent OC seasons: the 2024
-New Orleans Saints (weighted 40%) and the 2025 Seattle Seahawks (weighted 60%).
-The newer season is weighted higher because it reflects the offense Kubiak
-built with the most recent autonomy.
+Kubiak's scheme tendencies from his three OC seasons, recency-weighted: the
+2021 Minnesota Vikings (15%), the 2024 New Orleans Saints (35%), and the 2025
+Seattle Seahawks (50%). Newer seasons are weighted higher because they reflect
+the offense Kubiak built with the most autonomy. (The 2021 season abstains from
+the FTN-charted motion/play-action features, which only exist from 2022 on.)
+See the About page for the full reasoning.
 
 ## Two grades, one Scheme Experience tag
 

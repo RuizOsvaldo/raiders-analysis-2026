@@ -7,7 +7,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import streamlit as st
 
-st.set_page_config(page_title="Las Vegas Raiders 2026 | About", layout="wide")
 st.title("About This Project")
 st.caption("Why it was built this way, and what every number means.")
 
@@ -24,22 +23,34 @@ The project builds a measurable answer using only free, public data.
 
 ---
 
-## Why these two reference seasons
+## Why these three reference seasons
 
-Kubiak's scheme is defined by his two most recent full OC seasons:
+Kubiak's scheme is defined by his three seasons as an NFL offensive coordinator,
+each weighted by recency:
 
-- **2024 New Orleans Saints** -- Kubiak's first full offensive coordinator role,
-  Derek Carr (then Spencer Rattler) as QB. The Saints had a lower-scoring offense
-  but Kubiak established his wide-zone and motion identity.
-- **2025 Seattle Seahawks** -- Kubiak's most recent season, Sam Darnold as QB.
-  Greater roster control and more reflection of what Kubiak would build given
-  full authority.
+- **2021 Minnesota Vikings** (weighted **15%**) -- Kubiak's first OC year, Kirk
+  Cousins at QB. He was still working inside his father's (Gary Kubiak) framework
+  with less autonomy, so it gets the lightest weight, but it adds a third season
+  of physical and run-game signal.
+- **2024 New Orleans Saints** (weighted **35%**) -- Derek Carr (then Spencer
+  Rattler) at QB. A lower-scoring offense, but where Kubiak established his own
+  wide-zone and motion identity.
+- **2025 Seattle Seahawks** (weighted **50%**) -- Kubiak's most recent season,
+  Sam Darnold at QB. The most roster control and the best reflection of what
+  Kubiak would build given full authority.
 
-The Seahawks season is weighted **60%** and the Saints season **40%**
-because recency matters: if Kubiak ran something in 2025 that he did not run
-in 2024, the 2025 version is a better predictor of what he will install in
-Las Vegas. A simple average would treat a two-year-old season as equally
-predictive as last year.
+More recent seasons are weighted higher because recency matters: if Kubiak ran
+something in 2025 that he did not run in 2021, the 2025 version is a better
+predictor of what he will install in Las Vegas. A simple average would treat a
+four-year-old season as equally predictive as last year.
+
+**One caveat on the 2021 season.** FTN play-level charting -- which feeds the
+play-action, pre-snap motion, RPO, and out-of-pocket features -- only exists in
+nflverse from 2022 onward. So the 2021 Vikings players contribute to the
+physical and non-charted performance features but *abstain* from the
+FTN-derived ones, and the scheme-tendency profile itself is built from the
+2024 and 2025 seasons only. Adding another reference season is a one-line
+change to the `REFERENCE` config in `src/archetype.py`.
 
 ---
 
@@ -77,11 +88,25 @@ Fit.
 The model has no labeled outcome, so it can't report a conventional accuracy.
 What it can show is internal validity: the players who *define* Kubiak's
 archetype should grade higher than an arbitrary control population. They do --
-across QB, RB, WR and TE the reference players average roughly 5-12 points above
-a 250-player control set, with RB the strongest separator now that it uses the
-performance model. This is run by `scripts/validate.py`. It is a necessary
-sanity check, not a substitute for backtesting against real future production --
-which would require outcome data the free sources don't provide.
+run by `scripts/validate.py`, Kubiak's reference players average about **9
+points** above a deterministic 250-player control set:
+
+| Group | Separation (ref − control) |
+|---|---|
+| QB | +29 |
+| TE | +7 |
+| WR | +6 |
+| RB | +3 |
+| **All** | **+9** |
+
+The separation is strongest at quarterback and thinnest at running back. RB
+stays the hardest position to separate even on the performance model, because
+back production is noisy and NFL backs are broadly interchangeable -- a useful
+reminder that the RB grade carries the least signal of any position. (Offensive
+line is excluded from this test; see the OL section for why its one-sided grade
+doesn't fit a reference-vs-control comparison.) This is a necessary sanity
+check, not a substitute for backtesting against real future production -- which
+would require outcome data the free sources don't provide.
 
 ---
 
@@ -152,7 +177,7 @@ number is the grade.
 
 These are designed weights based on analytical consensus for wide-zone play-action
 offenses, not learned from data. A model that learned these weights would need
-far more reference seasons than two.
+far more reference seasons than the three available here.
 
 ---
 
@@ -201,8 +226,9 @@ These limitations are gaps in what is publicly available:
   Kubiak runs a lot of 12-personnel but cannot measure it.
 - **Route-level receiver data**: separation, route usage by type. Available in
   paid NextGen Stats tiers but not the free API.
-- **More reference seasons**: Kubiak was a position coach and then assistant before
-  his two OC years. We have two seasons. More would make the archetype more stable.
+- **More reference seasons**: Kubiak has three NFL seasons as a full offensive
+  coordinator (2021, 2024, 2025), and this project uses all three. More would
+  make the archetype more stable, but they don't exist yet.
 
 The project is designed so that when better data becomes available, the feature
 lists in `src/archetype.py` can be extended without changing the scoring

@@ -11,7 +11,6 @@ import streamlit as st
 
 from utils import coverage_label, load_roster_grades
 
-st.set_page_config(page_title="Position Comparison", layout="wide")
 st.title("Position Group Comparison")
 
 df = load_roster_grades()
